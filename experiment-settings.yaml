@@ -1,0 +1,86 @@
+# Experiment settings
+
+# Experiment repository
+experiment_repo: "geometry-based-wireless-power-transfer"  # github repo name
+organisation: "techtile-by-dramco"  # github org
+
+# Server settings
+server:
+  host: "techtile-geof.local"
+  messaging_port: 5678
+  sync_port: 5679
+heartbeat_interval: 10
+
+# Tile settings
+# tiles: "E06 E07 F05 D05"                    # group name, single tile, or space-separated list
+tiles: "ceiling"
+# tiles: "G05 G06 G07 G08 G09 G10 F05 F06 F07 F08 F09 F10 E05 E06 E07 E08 E09 E10 D05 D06 D07 D08 D09 D10 C05 C06 C07 C08 C09 C10 B06 B07 B08 B09 B10 A05 A06 A07 A08 A09 A10"                    # group name, single tile, or space-separated list
+# tiles: "G05 G06 G07 G08 G09 G10 F06 F07 F08 F09 F10 E05 E06 E07 E08 E09 E10 D05 D06 D07 D08 D09 D10 C05 C06 C07 C08 C09 B05 B06 B07 B08 B09 B10 A05 A06 A07 A08 A09 A10" # all except C10 this is done manually + F05 is down....
+
+# usrp settings
+frequency: 920e6
+channel: 0
+gain: 80
+rate: 250e3
+duration : 36000                      # time span over which phases are kept constant
+#duration : 10                       # time span over which phases are kept constant (run_adaptive_single_tone)
+
+extra_packages:                     # list of extra packages to be installed on the tiles' rpi's
+  - python3-numpy
+  - python3-scipy
+  - python3-zmq
+
+# Name of the script to run on the clients (make sure it is in the <your-repo>/client folder)
+# client_script_name: "run_gbwpt_random_phases.py"
+# client_script_name: "run_gbwpt_phases.py"
+client_script_name: "run_reciprocity.py"
+client_script_args:
+  - "--config-file"
+  - "/home/pi/geometry-based-wireless-power-transfer/experiment-settings.yaml"
+  # - "--tx-phase-file"
+  # - "tx-phases-friis.yml"
+
+# Server script behaviour
+test_connectivity: False             # set True if you want to test tile connectivity before continuing.
+halt_on_connectivity_failure: False  # set False if you want to continue with only the active tiles
+
+experiment_config:
+  # name: "random-phases"
+  # name: "phases"
+  name: "reciprocity"
+
+
+scope:
+  ip: "192.108.1.219"
+  channels: [1,2]
+
+# Energy Profiler settings
+ep:
+  csv_header:
+  - timestamp
+  - buffer_voltage_mv
+  - resistance
+  - pwr_pw
+  enabled: true
+  ip: 192.108.2.45 #ttrpi5.local #192.108.2.45 #TTRPI5.local
+  port: 5556
+  protocol: zmq
+
+# Positioning settings
+positioning:
+  csv_header:
+  - x
+  - y
+  - z
+  - utc
+  - rm
+  enabled: false
+  ip: 192.108.0.13
+  port: 5556
+  protocol: zmq
+  system: QUALYSIS
+  xaxisoffset: 0
+  yaxisoffset: 0
+  zaxisoffset: 0
+  wanted_body: "ep"
+  capture_time_per_pos: 0.2 # in seconds only for direct method
