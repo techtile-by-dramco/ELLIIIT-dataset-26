@@ -24,7 +24,8 @@ import json
 import csv
 import subprocess
 from pathlib import Path
-from datetime import datetime, time
+import time
+from datetime import datetime
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -117,7 +118,7 @@ def DAQ(config: dict, RIR_excitation: np.ndarray):
         # Setup same reference clock and triggers for synchronization over PXI_Trig
         out1.timing.ref_clk_src = "PXIe_Clk100"
         out1.timing.ref_clk_rate = 100000000
-        out1.timing.cfg_samp_clk_timing(rate=config["sample_rate"], samps_per_chan=in1) # sample_mode=AcquisitionType.CONTINUOUS
+        out1.timing.cfg_samp_clk_timing(rate=config["sample_rate"], samps_per_chan=n_out) # sample_mode=AcquisitionType.CONTINUOUS
         out1.triggers.sync_type.SLAVE = True
 
         in1.timing.ref_clk_src = "PXIe_Clk100"
@@ -214,12 +215,8 @@ def calculateRIRDeconvolution(config: dict, RX_data: np.ndarray, chirpExcitation
         
     return measured_RIRs
 
-def saveReceivedESS(config: dict, RX_data: np.ndarray) -> list:
-    measured_ESSs = []
-    for rx in RX_data:
-        measured_ESSs.append(rx.tolist())
-        
-    return measured_ESSs
+def saveReceivedESS(RX_data: np.ndarray) -> list[np.ndarray]:
+    return [np.array(rx) for rx in RX_data]
 
 def calculateRIRS(config: dict, RX_data: np.ndarray, chirpExcitation: np.ndarray, method: str = "save_ess", ) -> list:
     if method == "deconv":
@@ -227,7 +224,7 @@ def calculateRIRS(config: dict, RX_data: np.ndarray, chirpExcitation: np.ndarray
     elif method == "fft":
         return [calculateRIRFFT(rx, chirpExcitation) for rx in RX_data]
     elif method == "save_ess":
-        return [saveReceivedESS(config, RX_data)]
+        return saveReceivedESS(RX_data)
                 
 def save_RIRs_to_csv(config: dict, used_channels: list, unused_channels: list, chirpExcitation: np.ndarray, measuredRIRs: list, filename: Path) -> None:
     with open(filename, mode="w", newline="") as f:
@@ -278,7 +275,7 @@ def plotRIRS(config: dict, measuredRIRs: list, used_channels: list) -> None:
     for idx, (mic_id, channel, coords) in enumerate(used_channels[:5]):
         plt.figure()
         plt.plot(measuredRIRs[idx])
-        plt.title(f"Measured RIR - Mic {mic_id} at {coords}")
+        plt.title(f"Measured - Mic {mic_id} at {coords}")
         plt.xlabel("Sample Index")
         plt.ylabel("Amplitude")
         plt.grid()
