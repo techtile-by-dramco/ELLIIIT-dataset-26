@@ -126,6 +126,6 @@ MN_dict = {
 }
 
 source_dict = {
-    'SRC0': ["/PXI1Slot2/ao0"]
+    'SRC0': ["/PXI1Slot2/ao2", [0, 0, 0]],
 }
     

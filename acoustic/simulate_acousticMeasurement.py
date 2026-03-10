@@ -1,18 +1,19 @@
 from acousticMeasurement import run_acoustic_measurement, load_config, update_config
 
+
 def main():
-    example_speaker_coords = [7.38, 0.01, 1.07]
+    example_speaker_coords = [4.58, 2.68, 0.2]
     
     # Define the parameters you want to override for this test
     zmq_params = {
         "speaker_coordinates": example_speaker_coords,
         "chirp_f_start":   20000,
-        "chirp_f_stop":    30000,
-        "chirp_duration":  0.10,
-        "chirp_DC":        0.1,
+        "chirp_f_stop":    40000,
+        "chirp_duration":  0.03,
+        "chirp_DC":        0.0,
         "chirp_ampl":      0.05,
         "plot_signals":    True,  # Note: Capitalized 'True'
-        "get_system_info": True,  # Note: Capitalized 'True'
+        "get_system_info": False,  # Note: Capitalized 'True'
     }
 
     print("Loading base config...")

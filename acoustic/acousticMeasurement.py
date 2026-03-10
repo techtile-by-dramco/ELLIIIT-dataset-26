@@ -26,8 +26,10 @@ import subprocess
 from pathlib import Path
 import time
 from datetime import datetime
-
+import pyroomacoustics as pra
 import numpy as np
+import matplotlib
+matplotlib.use("TkAgg")   # ← add this line between the two
 import matplotlib.pyplot as plt
 from scipy.signal import chirp, convolve
 import nidaqmx as ni
@@ -268,20 +270,6 @@ def _run_exe(exe_path: Path, label: str) -> None:
         print(f"[{label}] {result.stdout.strip()}")
 
 
-def plotRIRS(config: dict, measuredRIRs: list, used_channels: list) -> None:
-    if not config.get("plot_signals", False):
-        return
-    
-    for idx, (mic_id, channel, coords) in enumerate(used_channels[:5]):
-        plt.figure()
-        plt.plot(measuredRIRs[idx])
-        plt.title(f"Measured - Mic {mic_id} at {coords}")
-        plt.xlabel("Sample Index")
-        plt.ylabel("Amplitude")
-        plt.grid()
-        plt.show()
-        
-        
 def run_acoustic_measurement(base_config: dict, overrides: dict) -> dict:
     # ZMQ stub: these values will come from the orchestrator
     # example_speaker_coords = [7.38, 0.01, 1.07]
@@ -318,15 +306,14 @@ def run_acoustic_measurement(base_config: dict, overrides: dict) -> dict:
 
     _run_exe(EXE_CLEANUP, "cleanup")
 
-    measuredRIRs = calculateRIRS(config, RX_data, chirpExcitation, method="save_ess")
+    measuredRIRs = calculateRIRS(config, RX_data, chirpExcitation, method="deconv")
 
     # Save results
     sx, sy, sz = config["speaker_coordinates"]
     timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename   = SAVE_DIR / f"Measured_RIRs_{sx}_{sy}_{sz}_{timestamp}.csv"
     save_RIRs_to_csv(config, used_channels, unused_channels, chirpExcitation, measuredRIRs, filename)
-    plotRIRS(config, measuredRIRs, used_channels)
-    
+
     return {
         "csv_file":   str(filename),
         "n_mics":     len(used_channels),
