@@ -97,6 +97,7 @@ def DAQ(config: dict, RIR_excitation: np.ndarray):
     n_out = np.size(RIR_excitation)
     n_in  = 2 * n_out
     used_channels = []
+    unused_channels = []
 
     with ni.Task(new_task_name='out_slot2') as out1, ni.Task(new_task_name="in") as in1:
 
@@ -146,7 +147,25 @@ def DAQ(config: dict, RIR_excitation: np.ndarray):
 
         # Dit gedeelte nog eens goed bekijken!!!!!
     RX = RX_raw[:, n_out:]
-    return RX, used_channels
+    
+    valid_used_channels = []
+    valid_rx_indices = []
+
+    for idx, channel_info in enumerate(used_channels):
+        rir_mean = np.mean(RX[idx])
+        
+        if rir_mean < 1.5:
+            unused_channels.append(channel_info)
+            print(f"Channel {channel_info[0]} marked as HARDWARE ERROR (mean={rir_mean:.2f})")
+        else:
+            valid_used_channels.append(channel_info)
+            valid_rx_indices.append(idx)
+            
+    used_channels = valid_used_channels
+    
+    RX = RX[valid_rx_indices, :]
+
+    return RX, used_channels, unused_channels
 
 
 def excitateChirp(config: dict):
@@ -157,8 +176,8 @@ def excitateChirp(config: dict):
 
     chirpExcitation = config["chirp_ampl"] * chirp(t, f0=config["chirp_f_start"], f1=config["chirp_f_stop"], t1=duration, method="log")
 
-    RX_data, used_channels = DAQ(config, chirpExcitation)
-    return chirpExcitation, used_channels, RX_data
+    RX_data, used_channels, unused_channels = DAQ(config, chirpExcitation)
+    return chirpExcitation, used_channels, unused_channels, RX_data
 
 
 def calculateRIRFFT(rx_channel: np.ndarray, chirpExcitation: np.ndarray) -> np.ndarray:
@@ -183,25 +202,34 @@ def calculateRIRDeconvolution(config: dict, RX_data: np.ndarray, chirpExcitation
     L = duration / math.log(f2 / f1)
 
     t_rev = np.linspace(0, duration, N, endpoint=False)
-    weight = (2 * math.pi * f1) / (2 * math.pi * f2) * np.exp(t_rev / L)
+    
+    weight = np.exp(-t_rev / L) 
     inv_filter = np.flipud(chirpExcitation) * weight / (amp ** 2)
 
     measured_RIRs = []
     for rx in RX_data:
         conv = convolve(rx, inv_filter, mode="full")
         rir  = conv[N - 1: N - 1 + len(rx)]
-        measured_RIRs.append(np.abs(rir))
+        measured_RIRs.append(rir) 
+        
     return measured_RIRs
 
+def saveReceivedESS(config: dict, RX_data: np.ndarray) -> list:
+    measured_ESSs = []
+    for rx in RX_data:
+        measured_ESSs.append(rx.tolist())
+        
+    return measured_ESSs
 
-def calculateRIRS(config: dict, RX_data: np.ndarray, chirpExcitation: np.ndarray, method: str = "fft", ) -> list:
+def calculateRIRS(config: dict, RX_data: np.ndarray, chirpExcitation: np.ndarray, method: str = "save_ess", ) -> list:
     if method == "deconv":
         return calculateRIRDeconvolution(config, RX_data, chirpExcitation)
-    else:
+    elif method == "fft":
         return [calculateRIRFFT(rx, chirpExcitation) for rx in RX_data]
-    
-    
-def save_RIRs_to_csv(config: dict, used_channels: list, measuredRIRs: list, filename: Path) -> None:
+    elif method == "save_ess":
+        return [saveReceivedESS(config, RX_data)]
+                
+def save_RIRs_to_csv(config: dict, used_channels: list, unused_channels: list, chirpExcitation: np.ndarray, measuredRIRs: list, filename: Path) -> None:
     with open(filename, mode="w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["speaker", "microphone_coordinates", "microphone_label", "RIR_value"])
@@ -212,6 +240,21 @@ def save_RIRs_to_csv(config: dict, used_channels: list, measuredRIRs: list, file
                 mic_id,
                 measuredRIRs[idx].tolist(),
             ])
+        for idx, (mic_id, channel, coords) in enumerate(unused_channels):
+            writer.writerow([
+                config["speaker_coordinates"],
+                tuple(coords),
+                mic_id,
+                "unused",
+            ])
+        # Write info about chirp excitation as metadata rows
+        writer.writerow([
+            config["speaker_coordinates"],
+            "chirp_excitation",
+            "chirp_excitation",
+            chirpExcitation.tolist(),
+        ])
+
     print(f"RIRs saved: {filename}")
 
 
@@ -226,6 +269,7 @@ def _run_exe(exe_path: Path, label: str) -> None:
         )
     if result.stdout:
         print(f"[{label}] {result.stdout.strip()}")
+
 
 def plotRIRS(config: dict, measuredRIRs: list, used_channels: list) -> None:
     if not config.get("plot_signals", False):
@@ -270,20 +314,20 @@ def run_acoustic_measurement(base_config: dict, overrides: dict) -> dict:
     t_start = time.time()
     
     try:
-        chirpExcitation, used_channels, RX_data = excitateChirp(config)
+        chirpExcitation, used_channels, unused_channels, RX_data = excitateChirp(config)
     except Exception as exc:
         _run_exe(EXE_CLEANUP, "cleanup")    # always clean up even on failure
         raise RuntimeError(f"DAQ acquisition failed: {exc}") from exc
 
     _run_exe(EXE_CLEANUP, "cleanup")
 
-    measuredRIRs = calculateRIRS(config, RX_data, chirpExcitation, method="fft")
+    measuredRIRs = calculateRIRS(config, RX_data, chirpExcitation, method="save_ess")
 
     # Save results
     sx, sy, sz = config["speaker_coordinates"]
     timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename   = SAVE_DIR / f"Measured_RIRs_{sx}_{sy}_{sz}_{timestamp}.csv"
-    save_RIRs_to_csv(config, used_channels, measuredRIRs, filename)
+    save_RIRs_to_csv(config, used_channels, unused_channels, chirpExcitation, measuredRIRs, filename)
     plotRIRS(config, measuredRIRs, used_channels)
     
     return {
