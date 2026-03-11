@@ -28,9 +28,6 @@ import time
 from datetime import datetime
 import pyroomacoustics as pra
 import numpy as np
-import matplotlib
-matplotlib.use("TkAgg")   # ← add this line between the two
-import matplotlib.pyplot as plt
 from scipy.signal import chirp, convolve
 import nidaqmx as ni
 from nidaqmx.constants import AcquisitionType, TaskMode
@@ -128,44 +125,43 @@ def DAQ(config: dict, RIR_excitation: np.ndarray):
         in1.timing.cfg_samp_clk_timing(rate=config["sample_rate"], samps_per_chan=n_in, sample_mode=AcquisitionType.FINITE)
         in1.triggers.sync_type.MASTER = True
         
-        out1.triggers.sync_type.SLAVE  = True
-        in1.triggers.sync_type.MASTER  = True
-
         out1.control(TaskMode.TASK_COMMIT)
         in1.control(TaskMode.TASK_COMMIT)
 
-        # AO fires when AI start trigger fires
         out1.triggers.start_trigger.cfg_dig_edge_start_trig(in1.triggers.start_trigger.term)
         out1.write(RIR_excitation, auto_start=False)
 
-        # ORDER MATTERS: slave (out) first, then master (in)
         out1.start()
         in1.start()
 
         RX_raw = in1.read(number_of_samples_per_channel=n_in)
-        RX_raw = np.atleast_2d(RX_raw)     # ensure 2-D even for single mic
 
         out1.stop()
         in1.stop()
 
-        # Dit gedeelte nog eens goed bekijken!!!!!
-    RX = RX_raw[:, n_out:]
-    
+    RX = np.asarray(RX_raw)
+
+    if RX.ndim == 1:
+        RX = RX[np.newaxis, :]
+
+    RX = RX[:, 1:]
+
+    RX = np.ascontiguousarray(RX, dtype=float)
+
     valid_used_channels = []
     valid_rx_indices = []
 
     for idx, channel_info in enumerate(used_channels):
         rir_mean = np.mean(RX[idx])
-        
+
         if rir_mean < 1.5:
             unused_channels.append(channel_info)
             print(f"Channel {channel_info[0]} marked as HARDWARE ERROR (mean={rir_mean:.2f})")
         else:
             valid_used_channels.append(channel_info)
             valid_rx_indices.append(idx)
-            
+
     used_channels = valid_used_channels
-    
     RX = RX[valid_rx_indices, :]
 
     return RX, used_channels, unused_channels
@@ -190,31 +186,30 @@ def calculateRIRFFT(rx_channel: np.ndarray, chirpExcitation: np.ndarray) -> np.n
     Y = np.fft.rfft(rx_channel, n=nfft)
 
     eps = 1e-6 * np.max(np.abs(X))
-    H   = Y * np.conj(X) / (np.abs(X) ** 2 + eps ** 2)
+    H = Y * np.conj(X) / (np.abs(X) ** 2 + eps ** 2)
 
     rir = np.fft.irfft(H)
     return rir[:N].real
 
-
 def calculateRIRDeconvolution(config: dict, RX_data: np.ndarray, chirpExcitation: np.ndarray) -> list:
+    fs = config["sample_rate"]
     duration = config["chirp_duration"]
     f1 = config["chirp_f_start"]
     f2 = config["chirp_f_stop"]
     amp = config["chirp_ampl"]
     N = len(chirpExcitation)
-    L = duration / math.log(f2 / f1)
 
-    t_rev = np.linspace(0, duration, N, endpoint=False)
-    
-    weight = np.exp(-t_rev / L) 
-    inv_filter = np.flipud(chirpExcitation) * weight / (amp ** 2)
+    L = duration / np.log(f2 / f1)
+    p = np.arange(N) / fs
+    weight   = (f1 / f2) * np.exp(+p / L)
+    inv_filter = amp * np.flipud(chirpExcitation) * weight
 
     measured_RIRs = []
     for rx in RX_data:
         conv = convolve(rx, inv_filter, mode="full")
-        rir  = conv[N - 1: N - 1 + len(rx)]
-        measured_RIRs.append(rir) 
-        
+        rir  = conv[N-1 : 2*N - 1]
+        measured_RIRs.append(rir)
+
     return measured_RIRs
 
 def saveReceivedESS(RX_data: np.ndarray) -> list[np.ndarray]:
@@ -231,10 +226,14 @@ def calculateRIRS(config: dict, RX_data: np.ndarray, chirpExcitation: np.ndarray
 def save_RIRs_to_csv(config: dict, used_channels: list, unused_channels: list, chirpExcitation: np.ndarray, measuredRIRs: list, filename: Path) -> None:
     with open(filename, mode="w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["speaker", "microphone_coordinates", "microphone_label", "RIR_value"])
+        writer.writerow(["speaker", "duration", "f_start", "f_stop", "chirp_amp", "microphone_coordinates", "microphone_label", "values"])
         for idx, (mic_id, channel, coords) in enumerate(used_channels):
             writer.writerow([
                 config["speaker_coordinates"],
+                config["chirp_duration"],
+                config["chirp_f_start"],
+                config["chirp_f_stop"],
+                config["chirp_ampl"],
                 tuple(coords),
                 mic_id,
                 measuredRIRs[idx].tolist(),
@@ -242,13 +241,20 @@ def save_RIRs_to_csv(config: dict, used_channels: list, unused_channels: list, c
         for idx, (mic_id, channel, coords) in enumerate(unused_channels):
             writer.writerow([
                 config["speaker_coordinates"],
+                config["chirp_duration"],
+                config["chirp_f_start"],
+                config["chirp_f_stop"],
+                config["chirp_ampl"],
                 tuple(coords),
                 mic_id,
                 "unused",
             ])
-        # Write info about chirp excitation as metadata rows
         writer.writerow([
             config["speaker_coordinates"],
+            config["chirp_duration"],
+            config["chirp_f_start"],
+            config["chirp_f_stop"],
+            config["chirp_ampl"],
             "chirp_excitation",
             "chirp_excitation",
             chirpExcitation.tolist(),
@@ -258,10 +264,9 @@ def save_RIRs_to_csv(config: dict, used_channels: list, unused_channels: list, c
 
 
 def _run_exe(exe_path: Path, label: str) -> None:
-    """Run a sync / cleanup .exe with basic error checking."""
     if not exe_path.exists():
         raise FileNotFoundError(f"{label} executable not found: {exe_path}")
-    result = subprocess.run(str(exe_path), shell=True, capture_output=True, text=True)
+    result = subprocess.run(str(exe_path), shell=True, stdout=subprocess.PIPE, text=True)
     if result.returncode != 0:
         raise RuntimeError(
             f"{label} exited with code {result.returncode}:\n{result.stderr}"
@@ -271,48 +276,30 @@ def _run_exe(exe_path: Path, label: str) -> None:
 
 
 def run_acoustic_measurement(base_config: dict, overrides: dict) -> dict:
-    # ZMQ stub: these values will come from the orchestrator
-    # example_speaker_coords = [7.38, 0.01, 1.07]
-    # zmq_params = {
-    #     "speaker_coordinates": example_speaker_coords,
-    #     "chirp_f_start":   20000,
-    #     "chirp_f_stop":    30000,
-    #     "chirp_duration":  0.10,
-    #     "chirp_DC":        0.1,
-    #     "chirp_ampl":      0.05,
-    # }
-    # End ZMQ stub 
+    config = load_config()      # reload from disk
+    config.update(overrides)    # apply server-sent overrides before anything else
 
-    # config = load_config()
-
-    # for key, value in zmq_params.items():
-    #     update_config(key, value)
     
-    
-    config = load_config()      # reload after ZMQ updates
-
     if config.get("get_system_info"):
         read_system()
 
-    # Synchronisation setup, always run before and after DAQ
     _run_exe(EXE_SYNC, "sync")
     t_start = time.time()
     
     try:
         chirpExcitation, used_channels, unused_channels, RX_data = excitateChirp(config)
     except Exception as exc:
-        _run_exe(EXE_CLEANUP, "cleanup")    # always clean up even on failure
+        _run_exe(EXE_CLEANUP, "cleanup")
         raise RuntimeError(f"DAQ acquisition failed: {exc}") from exc
 
     _run_exe(EXE_CLEANUP, "cleanup")
 
-    measuredRIRs = calculateRIRS(config, RX_data, chirpExcitation, method="deconv")
+    measuredSignal = calculateRIRS(config, RX_data, chirpExcitation, method="save_ess")
 
-    # Save results
     sx, sy, sz = config["speaker_coordinates"]
     timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename   = SAVE_DIR / f"Measured_RIRs_{sx}_{sy}_{sz}_{timestamp}.csv"
-    save_RIRs_to_csv(config, used_channels, unused_channels, chirpExcitation, measuredRIRs, filename)
+    filename   = SAVE_DIR / f"Measured_Signal_{sx}_{sy}_{sz}_{timestamp}.csv"
+    save_RIRs_to_csv(config, used_channels, unused_channels, chirpExcitation, measuredSignal, filename)
 
     return {
         "csv_file":   str(filename),

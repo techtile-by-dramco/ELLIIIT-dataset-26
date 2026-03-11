@@ -4,35 +4,35 @@ zmq_orchestrator.py
 
 Single-file ZMQ orchestrator with:
 - Server (ROUTER): runs an experiment with a stable experiment_id and incremental meas_id
-- Clients (DEALER): roles in {"meas1","meas2","mover"} that execute commands and reply with matching IDs
+- Clients (DEALER): pass
 
 Cycle:
-  server -> START_MEAS (meas1, meas2) with {experiment_id, meas_id}
-  meas1/meas2 -> MEAS_DONE with {experiment_id, meas_id}
-  server -> START_MOV (mover) with {experiment_id, meas_id}
-  mover -> DONE_MOV with {experiment_id, meas_id}
+  server -> START_MEAS (meas1) with {experiment_id, meas_id}
+  meas1 -> MEAS_DONE with {experiment_id, meas_id}
   repeat (meas_id increments each cycle)
 
-Run 4 terminals:
+Run 2 terminals:
 
 1) Server:
    python zmq_orchestrator.py server --bind tcp://*:5555 --experiment-id EXP001
 
-2) Measurement clients:
-   python zmq_orchestrator.py client --connect tcp://127.0.0.1:5555 --id meas1
-   python zmq_orchestrator.py client --connect tcp://127.0.0.1:5555 --id meas2
-
-3) Mover client:
-   python zmq_orchestrator.py client --connect tcp://127.0.0.1:5555 --id mover
+2) Measurement client:
+   python zmqclient_acoustic.py --connect tcp://127.0.0.1:5555 --id meas1
 
 Optional:
 - deterministic simulated durations:
-   python zmq_orchestrator.py client --id meas1 --meas-time 0.5
-   python zmq_orchestrator.py client --id mover --mov-time 0.3
+   pass
 
-Notes:
-- Messages are JSON.
-- Server validates experiment_id + meas_id on replies (ignores out-of-cycle messages).
+- per-cycle measurement parameters (NEW):
+   python zmq_orchestrator.py server --experiment-id EXP001 --meas-plan measureConfig.json
+   measureConfig.json: list of dicts, one per cycle, e.g.:
+   [
+     {"speaker_coordinates": [1.0, 0.0, 1.2], "chirp_f_start": 200, "chirp_f_stop": 8000,
+      "chirp_duration": 3.0, "chirp_DC": 0, "chirp_ampl": 0.5},
+     {"speaker_coordinates": [2.0, 0.5, 1.2]}
+   ]
+   Last entry repeats if cycles > len(plan).
+
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ import random
 import signal
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import zmq
 
@@ -63,19 +63,17 @@ def jload(b: bytes) -> Dict[str, Any]:
 @dataclass
 class Timeouts:
     meas_s: float = 10.0
-    mov_s: float = 10.0
     poll_ms: int = 250
 
 
-# -----------------------------
-# Server (ROUTER)
-# -----------------------------
+# Server
 def server_main(
     bind: str,
     cycles: int,
     timeouts: Timeouts,
     experiment_id: str,
     meas_start: int,
+    meas_plan: List[Dict[str, Any]],
 ) -> None:
     ctx = zmq.Context.instance()
     sock = ctx.socket(zmq.ROUTER)
@@ -86,7 +84,7 @@ def server_main(
     poller.register(sock, zmq.POLLIN)
 
     alive: Set[str] = set()
-    needed = {"meas1", "meas2", "mover"}
+    needed = {"meas1"}
 
     stop = {"flag": False}
 
@@ -111,13 +109,10 @@ def server_main(
 
     print(f"[server] bound at {bind}")
     print(f"[server] experiment_id={experiment_id} meas_start={meas_start}")
-    print(
-        "[server] waiting briefly for HELLO from meas1, meas2, mover (Ctrl+C to stop)"
-    )
+    print("[server] waiting briefly for HELLO from meas1 (Ctrl+C to stop)")
 
-    # Optional: wait a bit for HELLOs
     t0 = time.time()
-    while not stop["flag"] and (alive != needed) and (time.time() - t0 < 5.0):
+    while not stop["flag"] and (alive != needed) and (time.time() - t0 < 15.0): # Wait 15 seconds
         got = recv_one(timeout_ms=timeouts.poll_ms)
         if got is None:
             continue
@@ -130,12 +125,12 @@ def server_main(
 
     if alive != needed:
         print(
-            f"[server] warning: not all clients present. alive={sorted(alive)} needed={sorted(needed)}"
+            f"[server] warning: not all clients present"
         )
         print("[server] continuing anyway; missing clients will cause timeouts.\n")
 
     cycle_id = 0
-    meas_id = meas_start - 1  # first increment yields meas_start
+    meas_id = meas_start - 1
 
     while not stop["flag"]:
         cycle_id += 1
@@ -144,7 +139,13 @@ def server_main(
 
         meas_id += 1
 
-        # ---- START_MEAS to both measurement clients
+        # NEW: pick measurement params for this cycle (last entry repeats if plan exhausted)
+        cycle_params: Dict[str, Any] = {}
+        if meas_plan:
+            idx = min(cycle_id - 1, len(meas_plan) - 1)
+            cycle_params = meas_plan[idx]
+
+        # ---- START_MEAS to meas1
         meas_done: Set[str] = set()
         start_meas_msg = {
             "type": "START_MEAS",
@@ -152,17 +153,17 @@ def server_main(
             "cycle_id": cycle_id,
             "meas_id": meas_id,
             "ts": now_ms(),
+            **cycle_params,
         }
-        for meas in ("meas1", "meas2"):
-            print(f"[server][exp {experiment_id}][meas {meas_id}] -> {meas} START_MEAS")
-            send_to(meas, start_meas_msg)
+        print(f"[server][exp {experiment_id}][meas {meas_id}] -> meas1 START_MEAS")
+        send_to("meas1", start_meas_msg)
 
-        # ---- Wait for both MEAS_DONE (must match experiment_id+meas_id+cycle_id)
+        # ---- Wait for MEAS_DONE (must match experiment_id+meas_id+cycle_id)
         deadline = time.time() + timeouts.meas_s
         while (
             not stop["flag"]
             and time.time() < deadline
-            and meas_done != {"meas1", "meas2"}
+            and meas_done != {"meas1"}
         ):
             got = recv_one(timeout_ms=timeouts.poll_ms)
             if got is None:
@@ -175,7 +176,7 @@ def server_main(
 
             if (
                 mtype == "MEAS_DONE"
-                and cid in {"meas1", "meas2"}
+                and cid in {"meas1"}
                 and mid_exp == experiment_id
                 and mid_meas == meas_id
                 and mid_cycle == cycle_id
@@ -196,65 +197,9 @@ def server_main(
                     f"exp={mid_exp} meas={mid_meas} cycle={mid_cycle}"
                 )
 
-        if meas_done != {"meas1", "meas2"}:
-            missing = {"meas1", "meas2"} - meas_done
+        if meas_done != {"meas1"}:
             print(
-                f"[server][exp {experiment_id}][meas {meas_id}] TIMEOUT waiting MEAS_DONE. missing={sorted(missing)}"
-            )
-            break
-
-        # ---- START_MOV to mover
-        print(f"[server][exp {experiment_id}][meas {meas_id}] -> mover START_MOV")
-        send_to(
-            "mover",
-            {
-                "type": "START_MOV",
-                "experiment_id": experiment_id,
-                "cycle_id": cycle_id,
-                "meas_id": meas_id,
-                "ts": now_ms(),
-            },
-        )
-
-        # ---- Wait for DONE_MOV (must match experiment_id+meas_id+cycle_id)
-        got_done = False
-        deadline = time.time() + timeouts.mov_s
-        while not stop["flag"] and time.time() < deadline and not got_done:
-            got = recv_one(timeout_ms=timeouts.poll_ms)
-            if got is None:
-                continue
-            cid, msg = got
-            mtype = msg.get("type")
-            mid_exp = msg.get("experiment_id")
-            mid_meas = msg.get("meas_id")
-            mid_cycle = msg.get("cycle_id")
-
-            if (
-                cid == "mover"
-                and mtype == "DONE_MOV"
-                and mid_exp == experiment_id
-                and mid_meas == meas_id
-                and mid_cycle == cycle_id
-            ):
-                got_done = True
-                print(
-                    f"[server][exp {experiment_id}][meas {meas_id}] <- mover DONE_MOV"
-                )
-            elif mtype == "ERROR" and mid_exp == experiment_id and mid_meas == meas_id:
-                print(
-                    f"[server][exp {experiment_id}][meas {meas_id}] <- {cid} ERROR: {msg.get('error')}"
-                )
-            elif mtype == "HELLO":
-                alive.add(cid)
-            else:
-                print(
-                    f"[server][exp {experiment_id}][meas {meas_id}] (ignored) <- {cid} {mtype} "
-                    f"exp={mid_exp} meas={mid_meas} cycle={mid_cycle}"
-                )
-
-        if not got_done:
-            print(
-                f"[server][exp {experiment_id}][meas {meas_id}] TIMEOUT waiting DONE_MOV"
+                f"[server][exp {experiment_id}][meas {meas_id}] TIMEOUT waiting MEAS_DONE."
             )
             break
 
@@ -268,124 +213,8 @@ def server_main(
 # -----------------------------
 # Client (DEALER)
 # -----------------------------
-def client_main(
-    connect: str, client_id: str, meas_time_s: float, mov_time_s: float
-) -> None:
-    if client_id not in {"meas1", "meas2", "mover"}:
-        raise ValueError("client --id must be one of: meas1, meas2, mover")
-
-    ctx = zmq.Context.instance()
-    sock = ctx.socket(zmq.DEALER)
-    sock.linger = 0
-    sock.setsockopt(zmq.IDENTITY, client_id.encode("utf-8"))
-    sock.connect(connect)
-
-    poller = zmq.Poller()
-    poller.register(sock, zmq.POLLIN)
-
-    stop = {"flag": False}
-
-    def _sigint(_sig, _frame):
-        stop["flag"] = True
-
-    signal.signal(signal.SIGINT, _sigint)
-
-    def send(msg: Dict[str, Any]) -> None:
-        sock.send(jdump(msg))
-
-    def recv(timeout_ms: int = 1000) -> Optional[Dict[str, Any]]:
-        events = dict(poller.poll(timeout_ms))
-        if sock not in events:
-            return None
-        return jload(sock.recv())
-
-    # announce presence (no experiment_id here on purpose)
-    send({"type": "HELLO", "id": client_id, "ts": now_ms()})
-    print(f"[client:{client_id}] connected to {connect}")
-
-    while not stop["flag"]:
-        msg = recv(timeout_ms=1000)
-        if msg is None:
-            continue
-
-        mtype = msg.get("type")
-        experiment_id = msg.get("experiment_id")
-        cycle_id = msg.get("cycle_id")
-        meas_id = msg.get("meas_id")
-
-        if mtype == "START_MEAS":
-            if client_id not in {"meas1", "meas2"}:
-                continue
-
-            print(
-                f"[client:{client_id}][exp {experiment_id}][meas {meas_id}] START_MEAS"
-            )
-
-            # Replace with real measurement work
-            t = meas_time_s if meas_time_s > 0 else random.uniform(0.2, 1.0)
-            time.sleep(t)
-
-            send(
-                {
-                    "type": "MEAS_DONE",
-                    "experiment_id": experiment_id,
-                    "cycle_id": cycle_id,
-                    "meas_id": meas_id,
-                    "id": client_id,
-                    "ts": now_ms(),
-                    "duration_s": round(t, 6),
-                }
-            )
-            print(
-                f"[client:{client_id}][exp {experiment_id}][meas {meas_id}] MEAS_DONE (t={t:.2f}s)"
-            )
-
-        elif mtype == "START_MOV":
-            if client_id != "mover":
-                continue
-
-            print(
-                f"[client:{client_id}][exp {experiment_id}][meas {meas_id}] START_MOV"
-            )
-
-            # Replace with real motion work
-            t = mov_time_s if mov_time_s > 0 else random.uniform(0.2, 1.0)
-            time.sleep(t)
-
-            send(
-                {
-                    "type": "DONE_MOV",
-                    "experiment_id": experiment_id,
-                    "cycle_id": cycle_id,
-                    "meas_id": meas_id,
-                    "id": client_id,
-                    "ts": now_ms(),
-                    "duration_s": round(t, 6),
-                }
-            )
-            print(
-                f"[client:{client_id}][exp {experiment_id}][meas {meas_id}] DONE_MOV (t={t:.2f}s)"
-            )
-
-        elif mtype == "PING":
-            send({"type": "PONG", "ts": now_ms()})
-
-        else:
-            send(
-                {
-                    "type": "ERROR",
-                    "experiment_id": experiment_id,
-                    "cycle_id": cycle_id,
-                    "meas_id": meas_id,
-                    "id": client_id,
-                    "error": f"Unknown type {mtype}",
-                    "ts": now_ms(),
-                }
-            )
-
-    print(f"[client:{client_id}] shutting down")
-    sock.close()
-    ctx.term()
+def client_main():
+    pass
 
 
 # -----------------------------
@@ -405,17 +234,19 @@ def parse_args() -> argparse.Namespace:
     )
     ps.add_argument("--cycles", type=int, default=0, help="0 = run forever")
     ps.add_argument("--meas-timeout", type=float, default=10.0)
-    ps.add_argument("--mov-timeout", type=float, default=10.0)
     ps.add_argument("--poll-ms", type=int, default=250)
+    ps.add_argument(
+        "--meas-plan", default=None, metavar="FILE",
+        help="JSON file: list of per-cycle measurement-parameter dicts "
+             "(speaker_coordinates, chirp_f_start, chirp_f_stop, "
+             "chirp_duration, chirp_DC, chirp_ampl)"
+    )
 
     pc = sub.add_parser("client")
     pc.add_argument("--connect", default="tcp://127.0.0.1:5555")
-    pc.add_argument("--id", required=True, choices=["meas1", "meas2", "mover"])
+    pc.add_argument("--id", required=True, choices=["meas1"])
     pc.add_argument(
         "--meas-time", type=float, default=0.0, help="0 = random simulated duration"
-    )
-    pc.add_argument(
-        "--mov-time", type=float, default=0.0, help="0 = random simulated duration"
     )
 
     return p.parse_args()
@@ -424,22 +255,24 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     if args.mode == "server":
+        meas_plan: List[Dict[str, Any]] = []
+        if args.meas_plan:
+            with open(args.meas_plan, "r", encoding="utf-8") as fh:
+                meas_plan = json.load(fh)
+            print(f"[server] loaded meas-plan: {len(meas_plan)} entries from {args.meas_plan}")
+
         server_main(
             bind=args.bind,
             cycles=args.cycles,
             timeouts=Timeouts(
-                meas_s=args.meas_timeout, mov_s=args.mov_timeout, poll_ms=args.poll_ms
+                meas_s=args.meas_timeout, poll_ms=args.poll_ms
             ),
             experiment_id=args.experiment_id,
             meas_start=args.meas_start,
+            meas_plan=meas_plan,
         )
     else:
-        client_main(
-            connect=args.connect,
-            client_id=args.id,
-            meas_time_s=args.meas_time,
-            mov_time_s=args.mov_time,
-        )
+        client_main()
 
 
 if __name__ == "__main__":

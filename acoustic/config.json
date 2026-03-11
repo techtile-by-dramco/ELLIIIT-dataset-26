@@ -5,15 +5,15 @@
     2.41
   ],
   "speaker_coordinates": [
-    4.58,
-    2.68,
-    0.2
+    4.555,
+    2.645,
+    0.215
   ],
   "chirp_f_start": 20000,
   "chirp_f_stop": 40000,
   "chirp_duration": 0.03,
   "chirp_DC": 0.0,
-  "chirp_ampl": 0.05,
+  "chirp_ampl": 0.075,
   "max_val_out": 10,
   "min_val_out": -10,
   "max_val_in": 10,
