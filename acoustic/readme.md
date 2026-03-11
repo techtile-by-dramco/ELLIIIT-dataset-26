@@ -110,6 +110,7 @@ The server sends `START_MEAS` with per-cycle parameters; the client replies with
 ---
 
 ## ZMQ Communication Flow
+```
 Server                            meas1 (ZMQclient_acoustic)
   |                                       |
   |-------- START_MEAS ------------------>|
@@ -128,8 +129,9 @@ Server                            meas1 (ZMQclient_acoustic)
   |                                       |
   [meas_id increments, next cycle starts] |
   |                                       |
-
 ```
+
+---
 
 ## Output CSV Format
 
