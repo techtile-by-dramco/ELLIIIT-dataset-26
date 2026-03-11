@@ -109,6 +109,28 @@ The server sends `START_MEAS` with per-cycle parameters; the client replies with
 
 ---
 
+## ZMQ Communication Flow
+Server                            meas1 (ZMQclient_acoustic)
+  |                                       |
+  |-------- START_MEAS ------------------>|
+  |         experiment_id, cycle_id,      |
+  |         meas_id, speaker_coordinates, |
+  |         chirp_f_start/stop/duration   |
+  |                                       |
+  |                      run_acoustic_measurement()
+  |                      ├─ play chirp via NI-DAQ AO
+  |                      ├─ record all mic channels (AI)
+  |                      └─ save results to CSV
+  |                                       |
+  |<-------- MEAS_DONE -------------------|
+  |          status, csv_file,            |
+  |          n_mics, duration_s           |
+  |                                       |
+  [meas_id increments, next cycle starts] |
+  |                                       |
+
+```
+
 ## Output CSV Format
 
 Each measurement is saved as a CSV with one row per microphone:
