@@ -1,0 +1,4 @@
+git+https://github.com/techtile-by-dramco/positioner
+git+https://github.com/techtile-by-dramco/scope
+cvxpy[MOSEK]
+pyzmq
