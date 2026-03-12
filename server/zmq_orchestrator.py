@@ -55,10 +55,6 @@ from typing import Any, Dict, Optional, Set, Tuple
 import zmq
 
 
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
-
 def now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -70,10 +66,6 @@ def jdump(obj: Dict[str, Any]) -> bytes:
 def jload(b: bytes) -> Dict[str, Any]:
     return json.loads(b.decode("utf-8"))
 
-
-# ---------------------------------------------------------------------------
-# config
-# ---------------------------------------------------------------------------
 
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "server_config.json"
 
@@ -108,10 +100,6 @@ class Timeouts:
         )
 
 
-# ---------------------------------------------------------------------------
-# server
-# ---------------------------------------------------------------------------
-
 def server_main(config_path: Path) -> None:
     cfg = load_server_config(config_path)
     print(f"[server] loaded config from {config_path}")
@@ -131,7 +119,7 @@ def server_main(config_path: Path) -> None:
     poller.register(sock, zmq.POLLIN)
 
     alive: Set[str] = set()
-    needed = {"rover", "acoustic"}
+    needed = {"rover", "acoustic", "rf"}
     stop   = {"flag": False}
 
     def _sigint(_sig, _frame):
@@ -281,16 +269,61 @@ def server_main(config_path: Path) -> None:
             print(f"[server][exp {experiment_id}][meas {meas_id}] TIMEOUT waiting MEAS_DONE — aborting")
             break
 
+        # -------------------------------------------------------------- RF MEAS
+        start_rf_msg: Dict[str, Any] = {
+            "type":          "START_MEAS",
+            "experiment_id": experiment_id,
+            "cycle_id":      cycle_id,
+            "meas_id":       meas_id,
+            "ts":            now_ms(),
+        }
+        print(f"[server][exp {experiment_id}][meas {meas_id}] -> rf START_MEAS")
+        send_to("rf", start_rf_msg)
+
+        got_rf_done = False
+        deadline = time.time() + timeouts.meas_s
+        while not stop["flag"] and time.time() < deadline and not got_rf_done:
+            got = recv_one(timeout_ms=timeouts.poll_ms)
+            if got is None:
+                continue
+            cid, msg = got
+            mtype     = msg.get("type")
+            mid_exp   = msg.get("experiment_id")
+            mid_meas  = msg.get("meas_id")
+            mid_cycle = msg.get("cycle_id")
+
+            if (
+                cid == "rf"
+                and mtype == "MEAS_DONE"
+                and mid_exp   == experiment_id
+                and mid_meas  == meas_id
+                and mid_cycle == cycle_id
+            ):
+                got_rf_done = True
+                status = msg.get("status", "ok")
+                print(f"[server][exp {experiment_id}][meas {meas_id}] <- rf MEAS_DONE  status={status}")
+                if status == "error":
+                    print(f"[server][exp {experiment_id}][meas {meas_id}] rf error: {msg.get('error')}")
+            elif mtype == "ERROR" and mid_exp == experiment_id and mid_meas == meas_id:
+                print(f"[server][exp {experiment_id}][meas {meas_id}] <- {cid} ERROR: {msg.get('error')}")
+            elif mtype == "HELLO":
+                alive.add(cid)
+            else:
+                print(
+                    f"[server][exp {experiment_id}][meas {meas_id}] "
+                    f"(ignored) <- {cid} {mtype} exp={mid_exp} meas={mid_meas}"
+                )
+
+        if not got_rf_done:
+            print(f"[server][exp {experiment_id}][meas {meas_id}] TIMEOUT waiting rf MEAS_DONE — aborting")
+            break
+
         print(f"[server][exp {experiment_id}][meas {meas_id}] cycle complete\n")
 
     print("[server] shutting down")
     sock.close()
     ctx.term()
 
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
