@@ -2,42 +2,44 @@
 """
 zmq_orchestrator.py
 
-ZMQ orchestrator with:
-- Server (ROUTER): runs an experiment with a stable experiment_id and incremental meas_id
+ZMQ orchestrator (ROUTER server).
+All configuration is read from server_config.json — which contains only
+server-side concerns (experiment identity, cycle count, timeouts, bind address).
+
+Clients (rover, acoustic) are fully self-configured via their own local configs.
+Messages carry only coordination identifiers; no parameters are forwarded.
 
 Cycle:
-  server   -> MOVE      (rover)    with {experiment_id, cycle_id, meas_id, x, y, ...}
-  rover    -> MOVE_DONE            with {experiment_id, cycle_id, meas_id}
-  server   -> START_MEAS (acoustic) with {experiment_id, cycle_id, meas_id, ...}
-  acoustic -> MEAS_DONE            with {experiment_id, cycle_id, meas_id}
-  repeat (meas_id increments each cycle)
+  server   -> MOVE       (rover)    {experiment_id, cycle_id, meas_id, ts}
+  rover    -> MOVE_DONE             {experiment_id, cycle_id, meas_id}
+  server   -> START_MEAS (acoustic) {experiment_id, cycle_id, meas_id, ts}
+  acoustic -> MEAS_DONE             {experiment_id, cycle_id, meas_id}
+  repeat
 
 Run 3 terminals:
 
 1) Server:
-   python zmq_orchestrator.py server --bind tcp://*:5555 --experiment-id EXP001
+   python zmq_orchestrator.py server
+   python zmq_orchestrator.py server --config path/to/server_config.json
 
 2) Rover client:
    python zmqclient_rover.py --connect tcp://127.0.0.1:5555
 
 3) Acoustic client:
-   python zmqclient_acoustic.py --connect tcp://127.0.0.1:5555
+   python zmqclient_acoustic.py --connect tcp://127.0.0.1:5555 --id acoustic
 
-Optional – per-cycle measurement parameters:
-   python zmq_orchestrator.py server --experiment-id EXP001 --meas-plan measureConfig.json
-
-   measureConfig.json: list of dicts, one per cycle, e.g.:
-   [
-     {"x": 100.0, "y":  50.0, "chirp_f_start": 200, "chirp_f_stop": 8000,
-      "chirp_duration": 3.0, "chirp_DC": 0, "chirp_ampl": 0.5},
-     {"x": 200.0, "y": 150.0}
-   ]
-   Last entry repeats if cycles > len(plan).
-
-Notes:
-- Messages are JSON.
-- Server validates experiment_id + cycle_id + meas_id on every reply.
-- Missing clients cause a timeout and abort the run.
+server_config.json layout:
+{
+    "experiment_id": "EXP001",
+    "bind":          "tcp://*:5555",
+    "cycles":        0,            // 0 = run forever
+    "meas_start":    1,
+    "timeouts": {
+        "mov_s":   30.0,
+        "meas_s":  60.0,
+        "poll_ms": 250
+    }
+}
 """
 
 from __future__ import annotations
@@ -47,10 +49,15 @@ import json
 import signal
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Set, Tuple
+from pathlib import Path
+from typing import Any, Dict, Optional, Set, Tuple
 
 import zmq
 
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
 
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -64,21 +71,57 @@ def jload(b: bytes) -> Dict[str, Any]:
     return json.loads(b.decode("utf-8"))
 
 
+# ---------------------------------------------------------------------------
+# config
+# ---------------------------------------------------------------------------
+
+DEFAULT_CONFIG_PATH = Path(__file__).parent / "server_config.json"
+
+
+def load_server_config(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"Server config not found: {path}")
+    with open(path) as f:
+        cfg = json.load(f)
+    _validate_server_config(cfg)
+    return cfg
+
+
+def _validate_server_config(cfg: Dict[str, Any]) -> None:
+    if "experiment_id" not in cfg:
+        raise ValueError("server_config must contain 'experiment_id'")
+
+
 @dataclass
 class Timeouts:
-    mov_s:   float = 10.0
-    meas_s:  float = 10.0
+    mov_s:   float = 30.0
+    meas_s:  float = 60.0
     poll_ms: int   = 250
 
+    @classmethod
+    def from_config(cls, cfg: Dict[str, Any]) -> "Timeouts":
+        t = cfg.get("timeouts", {})
+        return cls(
+            mov_s   = float(t.get("mov_s",   30.0)),
+            meas_s  = float(t.get("meas_s",  60.0)),
+            poll_ms = int(  t.get("poll_ms", 250)),
+        )
 
-def server_main(
-    bind: str,
-    cycles: int,
-    timeouts: Timeouts,
-    experiment_id: str,
-    meas_start: int,
-    meas_plan: List[Dict[str, Any]],
-) -> None:
+
+# ---------------------------------------------------------------------------
+# server
+# ---------------------------------------------------------------------------
+
+def server_main(config_path: Path) -> None:
+    cfg = load_server_config(config_path)
+    print(f"[server] loaded config from {config_path}")
+
+    experiment_id = cfg["experiment_id"]
+    bind          = cfg.get("bind", "tcp://*:5555")
+    cycles        = int(cfg.get("cycles", 0))
+    meas_start    = int(cfg.get("meas_start", 1))
+    timeouts      = Timeouts.from_config(cfg)
+
     ctx = zmq.Context.instance()
     sock = ctx.socket(zmq.ROUTER)
     sock.linger = 0
@@ -89,8 +132,7 @@ def server_main(
 
     alive: Set[str] = set()
     needed = {"rover", "acoustic"}
-
-    stop = {"flag": False}
+    stop   = {"flag": False}
 
     def _sigint(_sig, _frame):
         stop["flag"] = True
@@ -112,25 +154,23 @@ def server_main(
         return cid, msg
 
     print(f"[server] bound at {bind}")
-    print(f"[server] experiment_id={experiment_id}  meas_start={meas_start}")
-    print("[server] waiting briefly for HELLO from rover, acoustic (Ctrl+C to stop)")
+    print(f"[server] experiment_id={experiment_id}  cycles={'∞' if cycles == 0 else cycles}  meas_start={meas_start}")
+    print("[server] waiting for HELLO from rover, acoustic (up to 15 s)…")
 
     t0 = time.time()
-    while not stop["flag"] and (alive != needed) and (time.time() - t0 < 15.0):
+    while not stop["flag"] and alive != needed and (time.time() - t0 < 15.0):
         got = recv_one(timeout_ms=timeouts.poll_ms)
         if got is None:
             continue
         cid, msg = got
         if msg.get("type") == "HELLO":
             alive.add(cid)
-            print(f"[server] HELLO from {cid}  (alive={sorted(alive)})")
+            print(f"[server] HELLO from '{cid}'  (alive={sorted(alive)})")
         else:
-            print(f"[server] (pre-loop) got {msg.get('type')} from {cid}: {msg}")
+            print(f"[server] (pre-loop) got {msg.get('type')} from '{cid}'")
 
     if alive != needed:
-        print(
-            f"[server] warning: not all clients present.  alive={sorted(alive)}  needed={sorted(needed)}"
-        )
+        print(f"[server] WARNING: missing clients: {sorted(needed - alive)}")
         print("[server] continuing anyway; missing clients will cause timeouts.\n")
 
     cycle_id = 0
@@ -143,19 +183,13 @@ def server_main(
 
         meas_id += 1
 
-        # pick per-cycle params (last entry repeats when plan is exhausted)
-        cycle_params: Dict[str, Any] = {}
-        if meas_plan:
-            idx = min(cycle_id - 1, len(meas_plan) - 1)
-            cycle_params = meas_plan[idx]
-
-        move_msg = {
-            "type": "MOVE",
+        # ------------------------------------------------------------------ MOVE
+        move_msg: Dict[str, Any] = {
+            "type":          "MOVE",
             "experiment_id": experiment_id,
-            "cycle_id": cycle_id,
-            "meas_id": meas_id,
-            "ts": now_ms(),
-            **cycle_params,
+            "cycle_id":      cycle_id,
+            "meas_id":       meas_id,
+            "ts":            now_ms(),
         }
         print(f"[server][exp {experiment_id}][meas {meas_id}] -> rover MOVE")
         send_to("rover", move_msg)
@@ -180,30 +214,31 @@ def server_main(
                 and mid_cycle == cycle_id
             ):
                 got_move_done = True
-                print(f"[server][exp {experiment_id}][meas {meas_id}] <- rover MOVE_DONE")
+                status = msg.get("status", "ok")
+                print(f"[server][exp {experiment_id}][meas {meas_id}] <- rover MOVE_DONE  status={status}")
+                if status == "error":
+                    print(f"[server][exp {experiment_id}][meas {meas_id}] rover error: {msg.get('error')}")
             elif mtype == "ERROR" and mid_exp == experiment_id and mid_meas == meas_id:
-                print(
-                    f"[server][exp {experiment_id}][meas {meas_id}] <- {cid} ERROR: {msg.get('error')}"
-                )
+                print(f"[server][exp {experiment_id}][meas {meas_id}] <- {cid} ERROR: {msg.get('error')}")
             elif mtype == "HELLO":
                 alive.add(cid)
             else:
                 print(
-                    f"[server][exp {experiment_id}][meas {meas_id}] (ignored) <- {cid} {mtype} "
-                    f"exp={mid_exp} meas={mid_meas} cycle={mid_cycle}"
+                    f"[server][exp {experiment_id}][meas {meas_id}] "
+                    f"(ignored) <- {cid} {mtype} exp={mid_exp} meas={mid_meas}"
                 )
 
         if not got_move_done:
-            print(f"[server][exp {experiment_id}][meas {meas_id}] TIMEOUT waiting MOVE_DONE")
+            print(f"[server][exp {experiment_id}][meas {meas_id}] TIMEOUT waiting MOVE_DONE — aborting")
             break
 
-        start_meas_msg = {
-            "type": "START_MEAS",
+        # ------------------------------------------------------------ START_MEAS
+        start_meas_msg: Dict[str, Any] = {
+            "type":          "START_MEAS",
             "experiment_id": experiment_id,
-            "cycle_id": cycle_id,
-            "meas_id": meas_id,
-            "ts": now_ms(),
-            **cycle_params,
+            "cycle_id":      cycle_id,
+            "meas_id":       meas_id,
+            "ts":            now_ms(),
         }
         print(f"[server][exp {experiment_id}][meas {meas_id}] -> acoustic START_MEAS")
         send_to("acoustic", start_meas_msg)
@@ -228,21 +263,22 @@ def server_main(
                 and mid_cycle == cycle_id
             ):
                 got_meas_done = True
-                print(f"[server][exp {experiment_id}][meas {meas_id}] <- acoustic MEAS_DONE")
+                status = msg.get("status", "ok")
+                print(f"[server][exp {experiment_id}][meas {meas_id}] <- acoustic MEAS_DONE  status={status}")
+                if status == "error":
+                    print(f"[server][exp {experiment_id}][meas {meas_id}] acoustic error: {msg.get('error')}")
             elif mtype == "ERROR" and mid_exp == experiment_id and mid_meas == meas_id:
-                print(
-                    f"[server][exp {experiment_id}][meas {meas_id}] <- {cid} ERROR: {msg.get('error')}"
-                )
+                print(f"[server][exp {experiment_id}][meas {meas_id}] <- {cid} ERROR: {msg.get('error')}")
             elif mtype == "HELLO":
                 alive.add(cid)
             else:
                 print(
-                    f"[server][exp {experiment_id}][meas {meas_id}] (ignored) <- {cid} {mtype} "
-                    f"exp={mid_exp} meas={mid_meas} cycle={mid_cycle}"
+                    f"[server][exp {experiment_id}][meas {meas_id}] "
+                    f"(ignored) <- {cid} {mtype} exp={mid_exp} meas={mid_meas}"
                 )
 
         if not got_meas_done:
-            print(f"[server][exp {experiment_id}][meas {meas_id}] TIMEOUT waiting MEAS_DONE")
+            print(f"[server][exp {experiment_id}][meas {meas_id}] TIMEOUT waiting MEAS_DONE — aborting")
             break
 
         print(f"[server][exp {experiment_id}][meas {meas_id}] cycle complete\n")
@@ -252,58 +288,27 @@ def server_main(
     ctx.term()
 
 
+# ---------------------------------------------------------------------------
 # CLI
+# ---------------------------------------------------------------------------
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="ZMQ orchestrator: rover moves then acoustic measures"
+        description="ZMQ orchestrator — reads server_config.json only"
     )
     sub = p.add_subparsers(dest="mode", required=True)
 
     ps = sub.add_parser("server")
-    ps.add_argument("--bind", default="tcp://*:5555")
-    ps.add_argument("--experiment-id", required=True,
-                    help="Stable ID for the whole experiment/run")
-    ps.add_argument("--meas-start", type=int, default=1,
-                    help="Starting MEAS ID counter")
-    ps.add_argument("--cycles",       type=int,   default=0,
-                    help="Number of cycles to run (0 = run forever)")
-    ps.add_argument("--mov-timeout",  type=float, default=10.0,
-                    help="Seconds to wait for MOVE_DONE")
-    ps.add_argument("--meas-timeout", type=float, default=10.0,
-                    help="Seconds to wait for MEAS_DONE")
-    ps.add_argument("--poll-ms",      type=int,   default=250)
-    ps.add_argument("--meas-plan",    default=None, metavar="FILE",
-                    help=(
-                        "JSON file: list of per-cycle dicts "
-                        "(x, y, chirp_f_start, chirp_f_stop, chirp_duration, "
-                        "chirp_DC, chirp_ampl, …). "
-                        "Last entry repeats when cycles > len(plan)."
-                    ))
-
+    ps.add_argument(
+        "--config", default=str(DEFAULT_CONFIG_PATH),
+        help="Path to server_config.json  (default: ./server_config.json)",
+    )
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-
-    meas_plan: List[Dict[str, Any]] = []
-    if args.meas_plan:
-        with open(args.meas_plan, "r", encoding="utf-8") as fh:
-            meas_plan = json.load(fh)
-        print(f"[server] loaded meas-plan: {len(meas_plan)} entries from {args.meas_plan}")
-
-    server_main(
-        bind=args.bind,
-        cycles=args.cycles,
-        timeouts=Timeouts(
-            mov_s=args.mov_timeout,
-            meas_s=args.meas_timeout,
-            poll_ms=args.poll_ms,
-        ),
-        experiment_id=args.experiment_id,
-        meas_start=args.meas_start,
-        meas_plan=meas_plan,
-    )
+    server_main(config_path=Path(args.config))
 
 
 if __name__ == "__main__":

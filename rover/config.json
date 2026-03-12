@@ -1,8 +1,19 @@
 {
-  "speaker_coordinates": [
-    4.555,
-    2.645,
-    0.215
-  ],
-  "feed_rate": 20  
+    "serial_port": "COM3",
+    "baudrate": 115200,
+    "work_area": {
+        "width": 1250.0,
+        "height": 1250.0,
+        "margin": 10.0
+    },
+    "feed_rate": 20.0,
+    "positions": [
+        [100.0, 100.0],
+        [300.0, 100.0],
+        [300.0, 300.0],
+        [100.0, 300.0]
+    ],
+    "cycle_positions": true,
+    "home_after_move": true,
+    "verbose": false
 }

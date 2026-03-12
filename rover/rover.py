@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import math
 import time
-import json
-from pathlib import Path
 from dataclasses import dataclass
 from typing import Callable, Dict, Iterable, Iterator, Optional, Tuple, Union
 
@@ -58,6 +56,7 @@ class WorkArea:
             min(max(x, self.xmin), self.xmax),
             min(max(y, self.ymin), self.ymax),
         )
+
 
 class XYPlotter:
     """GRBL-based plotter controller for ACRO hardware."""
@@ -153,6 +152,7 @@ class XYPlotter:
         if self.ser and self.ser.is_open:
             self.ser.close()
 
+
 def _format_status_position(response: str) -> Optional[str]:
     """Extract a concise status line with position from a GRBL status response."""
     if not response.startswith("<") or not response.endswith(">"):
@@ -184,6 +184,7 @@ def _format_status_position(response: str) -> Optional[str]:
         return f"{state} {label}: {formatted}"
     return f"{label}: {formatted}"
 
+
 def serpentine_grid(area: WorkArea, spacing: float) -> Iterator[Point]:
     """Generate a classic zig-zag raster across the work area."""
     if spacing <= 0:
@@ -196,6 +197,7 @@ def serpentine_grid(area: WorkArea, spacing: float) -> Iterator[Point]:
         xs = x_values if row_index % 2 == 0 else x_values[::-1]
         for x in xs:
             yield float(x), float(y)
+
 
 def concentric_square_rings(area: WorkArea, spacing: float = 80.0) -> Iterator[Point]:
     """Walk concentric square perimeters expanding from the center."""
@@ -212,18 +214,15 @@ def concentric_square_rings(area: WorkArea, spacing: float = 80.0) -> Iterator[P
         bottom = cy - offset
         top = cy + offset
 
-        # Top edge (left -> right)
         for x in np.arange(left, right + spacing / 2, spacing):
             yield area.clamp(float(x), float(top))
-        # Right edge (top -> bottom)
         for y in np.arange(top - spacing, bottom - spacing / 2, -spacing):
             yield area.clamp(float(right), float(y))
-        # Bottom edge (right -> left)
         for x in np.arange(right - spacing, left - spacing / 2, -spacing):
             yield area.clamp(float(x), float(bottom))
-        # Left edge (bottom -> top)
         for y in np.arange(bottom + spacing, top + spacing / 2, spacing):
             yield area.clamp(float(left), float(y))
+
 
 def progressive_raster(
     area: WorkArea,
@@ -246,6 +245,7 @@ def progressive_raster(
         if spacing <= 0:
             break
 
+
 def center_out_refined_spiral(
     area: WorkArea,
     initial_spacing: float = 250.0,
@@ -253,12 +253,7 @@ def center_out_refined_spiral(
     min_spacing: float = 35.0,
     angle_step_deg: float = 6.0,
 ) -> Iterator[Point]:
-    """
-    Default pattern: start in the center, spiral out, and tighten spacing each full turn.
-
-    Each revolution expands the radius by the current spacing, then reduces the spacing
-    to increase granularity on the next revolution.
-    """
+    """Default pattern: start in the center, spiral out, tightening spacing each turn."""
     if initial_spacing <= 0:
         raise ValueError("Initial spacing must be positive")
     if min_spacing <= 0:
@@ -295,6 +290,7 @@ def center_out_refined_spiral(
             radius_offset += spacing
             spacing = max(min_spacing, spacing * spacing_decay)
 
+
 def radial_spokes(
     area: WorkArea,
     rays: int = 24,
@@ -330,17 +326,14 @@ def radial_spokes(
         toggle = not toggle
         radius += radial_step
 
+
 def phyllotaxis_fill(
     area: WorkArea,
     points: int = 500,
     step: float = 22.0,
     angle_deg: float = 137.5,
 ) -> Iterator[Point]:
-    """
-    Golden-angle spiral commonly used for even coverage.
-
-    Useful for a fast, center-out sweep with roughly uniform density.
-    """
+    """Golden-angle spiral for even coverage."""
     if points < 1:
         return
     if step <= 0:
@@ -366,26 +359,22 @@ def phyllotaxis_fill(
         y = cy + radius * math.sin(theta)
         yield area.clamp(x, y)
 
-def hilbert_curve(area: WorkArea, order: int = 6) -> Iterator[Point]:
-    """
-    Space-filling Hilbert curve over the largest inscribed square in the work area.
 
-    Higher order increases coverage density: total points = (2**order)^2.
-    """
+def hilbert_curve(area: WorkArea, order: int = 6) -> Iterator[Point]:
+    """Space-filling Hilbert curve over the largest inscribed square in the work area."""
     if order < 1:
         raise ValueError("Order must be >= 1")
 
-    grid_size = 2 ** order
+    grid_size    = 2 ** order
     total_points = grid_size * grid_size
 
-    usable_width = area.xmax - area.xmin
+    usable_width  = area.xmax - area.xmin
     usable_height = area.ymax - area.ymin
-    size = min(usable_width, usable_height)
+    size     = min(usable_width, usable_height)
     origin_x = (area.xmin + area.xmax - size) / 2
     origin_y = (area.ymin + area.ymax - size) / 2
 
     def d2xy(n: int, d: int) -> Tuple[int, int]:
-        """Convert Hilbert distance to (x, y) on n x n grid."""
         x = y = 0
         t = d
         s = 1
@@ -409,6 +398,7 @@ def hilbert_curve(area: WorkArea, order: int = 6) -> Iterator[Point]:
         y = origin_y + (gy / denom) * size
         yield area.clamp(x, y)
 
+
 def resolve_pattern(pattern: PatternInput) -> PatternGenerator:
     """Return a callable pattern from a name or callable input."""
     if pattern is None:
@@ -422,9 +412,11 @@ def resolve_pattern(pattern: PatternInput) -> PatternGenerator:
             ) from exc
     return pattern
 
+
 def available_patterns() -> Tuple[str, ...]:
     """List registered pattern names."""
     return tuple(PATTERN_REGISTRY.keys())
+
 
 DEFAULT_PATTERN = center_out_refined_spiral
 PATTERN_REGISTRY: Dict[str, PatternGenerator] = {
@@ -439,50 +431,27 @@ PATTERN_REGISTRY: Dict[str, PatternGenerator] = {
     "hilbert": hilbert_curve,
 }
 
-BASE_DIR    = Path(__file__).parent.resolve()
-CONFIG_PATH = BASE_DIR / "config.json"
+def run_rover(x: float, y: float, config: dict) -> None:
+    """
+    Move the plotter to (x, y) using settings from config.
 
-def load_config(path: Path = CONFIG_PATH) -> dict:
-    if not path.exists():
-        raise FileNotFoundError(f"config not found: {path}")
-    with open(path, "r") as f:
-        config = json.load(f)
-    _validate_config(config)
-    return config
-
-def save_config(config: dict, path: Path = CONFIG_PATH) -> None:
-    with open(path, "w") as f:
-        json.dump(config, f, indent=2)
-    print(f"config saved: {path}")
-
-def update_config(key: str, value, path: Path = CONFIG_PATH) -> None:
-    config = load_config(path)
-    if key not in config:
-        raise KeyError(f"Key '{key}' not found in config")
-    config[key] = value
-    save_config(config, path)
-
-def _validate_config(config: dict) -> None:
-    required = [
-        "speaker_coordinates", "feed_rate"
-    ]
-    missing = [k for k in required if k not in config]
-    if missing:
-        raise ValueError(f"Config is missing keys: {missing}")
-    if config["feed_rate"] <= 0:
-        raise ValueError("feed_rate < 0")
-    
-def run_rover(base_config: dict, overrides: dict) -> dict:
-    config = load_config()      # reload from disk
-    config.update(overrides)
-    
-    coords = config["speaker_coordinates"]
-    x = float(coords[0])
-    y = float(coords[1])
+    Parameters
+    ----------
+    x, y   : target position in mm
+    config : rover_config.json dict (loaded by the caller)
+    """
+    port      = config["serial_port"]
+    baudrate  = int(config.get("baudrate", 115200))
     feed_rate = float(config["feed_rate"])
- 
-    area = WorkArea()
- 
+    home_after_move = bool(config.get("home_after_move", True))
+
+    wa_cfg = config.get("work_area", {})
+    area   = WorkArea(
+        width  = float(wa_cfg.get("width",  1250.0)),
+        height = float(wa_cfg.get("height", 1250.0)),
+        margin = float(wa_cfg.get("margin",   10.0)),
+    )
+
     clamped_x, clamped_y = area.clamp(x, y)
     if (clamped_x, clamped_y) != (x, y):
         print(
@@ -490,20 +459,14 @@ def run_rover(base_config: dict, overrides: dict) -> dict:
             f"– clamped to ({clamped_x:.3f}, {clamped_y:.3f})"
         )
         x, y = clamped_x, clamped_y
- 
-    print(f"[rover] moving to X={x:.3f}  Y={y:.3f}  feed={feed_rate}")
+
+    print(f"[rover] moving to X={x:.3f}  Y={y:.3f}  feed={feed_rate}  port={port}")
     t_start = time.time()
- 
-    with XYPlotter("COM3") as plotter:
+
+    with XYPlotter(port, baudrate=baudrate) as plotter:
         plotter.home()
         plotter.move(x, y, feed_rate=feed_rate)
-        plotter.move_to_origin()
- 
-    duration_s = round(time.time() - t_start, 3)
-    print(f"[rover] move complete in {duration_s}s")
- 
-    return {
-        "x":          x,
-        "y":          y,
-        "duration_s": duration_s,
-    }
+        if home_after_move:
+            plotter.move_to_origin()
+
+    print(f"[rover] move complete in {round(time.time() - t_start, 3)} s")

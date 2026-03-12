@@ -2,27 +2,15 @@
 """
 zmqclient_acoustic.py
 
-ZMQ DEALER client that performs real acoustic measurements.
-Designed to work with zmq_orchestrator.py (ROUTER server).
-
-Roles: meas1
+Role: acoustic
 
 Protocol:
-  server -> START_MEAS  {experiment_id, cycle_id, meas_id, <optional meas params>}
-  client -> MEAS_DONE   {experiment_id, cycle_id, meas_id, status, csv_file, n_mics, duration_s}
+  server -> START_MEAS  {experiment_id, cycle_id, meas_id, ts}
+  client -> MEAS_DONE   {experiment_id, cycle_id, meas_id, status="ok"}
           | MEAS_DONE   {experiment_id, cycle_id, meas_id, status="error", error=<str>}
 
-Optional measurement parameters forwarded from the server in START_MEAS:
-  speaker_coordinates  : [x, y, z]  (list of floats)
-  chirp_f_start        : float  [Hz]
-  chirp_f_stop         : float  [Hz]
-  chirp_duration       : float  [s]
-  chirp_DC             : float
-  chirp_ampl           : float  [0–1]
-
 Usage:
-  python zmqclient_acoustic.py --connect tcp://127.0.0.1:5555 --id meas1
-  python zmqclient_acoustic.py --connect tcp://127.0.0.1:5555 --id meas2
+  python zmqclient_acoustic.py --connect tcp://127.0.0.1:5555 --id acoustic
 """
 
 from __future__ import annotations
@@ -32,24 +20,19 @@ import json
 import signal
 import time
 from typing import Any, Dict, Optional
+
 import zmq
 
-from acousticMeasurement import load_config, read_system, run_acoustic_measurement
+from acousticMeasurement import run_acoustic_measurement
 
-MEAS_PARAM_KEYS = [
-    "speaker_coordinates",
-    "chirp_f_start",
-    "chirp_f_stop",
-    "chirp_duration",
-    "chirp_DC",
-    "chirp_ampl",
-]
 
 def now_ms() -> int:
     return int(time.time() * 1000)
 
+
 def jdump(obj: Dict[str, Any]) -> bytes:
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
 
 def jload(b: bytes) -> Dict[str, Any]:
     return json.loads(b.decode("utf-8"))
@@ -58,10 +41,6 @@ def jload(b: bytes) -> Dict[str, Any]:
 def measurer_client(connect: str, client_id: str) -> None:
     if client_id not in {"acoustic"}:
         raise ValueError("--id must be 'acoustic'")
-
-    base_config = load_config()
-    if base_config.get("get_system_info"):
-        read_system()
 
     ctx = zmq.Context.instance()
     sock = ctx.socket(zmq.DEALER)
@@ -89,7 +68,7 @@ def measurer_client(connect: str, client_id: str) -> None:
         return jload(sock.recv())
 
     send({"type": "HELLO", "id": client_id, "ts": now_ms()})
-    print(f"[{client_id}] Connected to {connect}. Waiting for commands…")
+    print(f"[{client_id}] connected to {connect}. Waiting for commands…")
 
     while not stop["flag"]:
         msg = recv(timeout_ms=1000)
@@ -107,15 +86,9 @@ def measurer_client(connect: str, client_id: str) -> None:
                 f"START_MEAS received"
             )
 
-            # Extract parameters from the server to override
-            overrides: Dict[str, Any] = {
-                k: msg[k] for k in MEAS_PARAM_KEYS if k in msg
-            }
-            if overrides:
-                print(f"[{client_id}][exp {experiment_id}][meas {meas_id}] overrides: {overrides}")
-
             try:
-                result = run_acoustic_measurement(base_config, overrides)
+                # Config is loaded internally from the local config.json
+                run_acoustic_measurement()
 
                 response: Dict[str, Any] = {
                     "type":          "MEAS_DONE",
@@ -124,19 +97,13 @@ def measurer_client(connect: str, client_id: str) -> None:
                     "meas_id":       meas_id,
                     "id":            client_id,
                     "status":        "ok",
-                    "csv_file":      result["csv_file"],
-                    "n_mics":        result["n_mics"],
-                    "duration_s":    result["duration_s"],
                     "ts":            now_ms(),
                 }
                 print(
-                    f"[{client_id}][exp {experiment_id}][meas {meas_id}] "
-                    f"MEAS_DONE  mics={result['n_mics']}  "
-                    f"took={result['duration_s']}s  file={result['csv_file']}"
+                    f"[{client_id}][exp {experiment_id}][meas {meas_id}] MEAS_DONE"
                 )
 
             except Exception as exc:
-                # Report the error back to the server but keep running
                 response = {
                     "type":          "MEAS_DONE",
                     "experiment_id": experiment_id,
@@ -166,7 +133,7 @@ def measurer_client(connect: str, client_id: str) -> None:
                 "ts":            now_ms(),
             })
 
-    print(f"[{client_id}] Shutting down.")
+    print(f"[{client_id}] shutting down.")
     sock.close()
     ctx.term()
 
@@ -175,11 +142,11 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Acoustic measurement ZMQ client")
     p.add_argument(
         "--connect", default="tcp://127.0.0.1:5555",
-        help="ZMQ endpoint of the orchestrator server"
+        help="ZMQ endpoint of the orchestrator server",
     )
     p.add_argument(
         "--id", required=True, choices=["acoustic"],
-        help="Client identity (must be unique per machine)"
+        help="Client identity (must match the server's expected client name)",
     )
     return p.parse_args()
 

@@ -1,24 +1,3 @@
-# Code to perform acoustic measurements using an omni-directional speaker
-#
-# -------------------------------------------------------------------------
-# Configuration parameters loaded from JSON file
-#
-# room_dim             : Physical room dimensions (meters)
-# speaker_coordinates  : 3D coordinates of the sound source (x, y, z)
-# chirp_f_start        : Start frequency of the excitation chirp (Hz)
-# chirp_f_stop         : Stop frequency of the excitation chirp (Hz)
-# chirp_duration       : Total duration of the chirp (s)
-# chirp_DC             : Chirp DC offset voltage
-# chirp_ampl           : Output amplitude of the chirp signal (V)
-# max_val_out          : Maximum allowed output voltage on NI-DAQ AO channel
-# min_val_out          : Minimum allowed output voltage on NI-DAQ AO channel
-# max_val_in           : Maximum expected input voltage on NI-DAQ AI channel
-# min_val_in           : Minimum expected input voltage on NI-DAQ AI channel
-# sample_rate          : Sampling frequency for NI-DAQ acquisition tasks (Hz)
-# plot_signals         : Boolean — enable/disable plotting of recorded signals
-# get_system_info      : Boolean — print NI-DAQ system information on startup
-# -------------------------------------------------------------------------
-
 import math
 import json
 import csv
@@ -48,24 +27,11 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
     _validate_config(config)
     return config
 
-def save_config(config: dict, path: Path = CONFIG_PATH) -> None:
-    with open(path, "w") as f:
-        json.dump(config, f, indent=2)
-    print(f"config saved: {path}")
-
-def update_config(key: str, value, path: Path = CONFIG_PATH) -> None:
-    config = load_config(path)
-    if key not in config:
-        raise KeyError(f"Key '{key}' not found in config")
-    config[key] = value
-    save_config(config, path)
-
-
 def _validate_config(config: dict) -> None:
     required = [
         "sample_rate", "chirp_f_start", "chirp_f_stop",
         "chirp_duration", "chirp_ampl", "chirp_DC",
-        "speaker_coordinates", "get_system_info",
+        "get_system_info", "method"
     ]
     missing = [k for k in required if k not in config]
     if missing:
@@ -226,10 +192,9 @@ def calculateRIRS(config: dict, RX_data: np.ndarray, chirpExcitation: np.ndarray
 def save_RIRs_to_csv(config: dict, used_channels: list, unused_channels: list, chirpExcitation: np.ndarray, measuredRIRs: list, filename: Path) -> None:
     with open(filename, mode="w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["speaker", "duration", "f_start", "f_stop", "chirp_amp", "microphone_coordinates", "microphone_label", "values"])
+        writer.writerow(["duration", "f_start", "f_stop", "chirp_amp", "microphone_coordinates", "microphone_label", "values"])
         for idx, (mic_id, channel, coords) in enumerate(used_channels):
             writer.writerow([
-                config["speaker_coordinates"],
                 config["chirp_duration"],
                 config["chirp_f_start"],
                 config["chirp_f_stop"],
@@ -240,7 +205,6 @@ def save_RIRs_to_csv(config: dict, used_channels: list, unused_channels: list, c
             ])
         for idx, (mic_id, channel, coords) in enumerate(unused_channels):
             writer.writerow([
-                config["speaker_coordinates"],
                 config["chirp_duration"],
                 config["chirp_f_start"],
                 config["chirp_f_stop"],
@@ -250,7 +214,6 @@ def save_RIRs_to_csv(config: dict, used_channels: list, unused_channels: list, c
                 "unused",
             ])
         writer.writerow([
-            config["speaker_coordinates"],
             config["chirp_duration"],
             config["chirp_f_start"],
             config["chirp_f_stop"],
@@ -260,7 +223,7 @@ def save_RIRs_to_csv(config: dict, used_channels: list, unused_channels: list, c
             chirpExcitation.tolist(),
         ])
 
-    print(f"RIRs saved: {filename}")
+    print(f"Saved to: {filename}")
 
 
 def _run_exe(exe_path: Path, label: str) -> None:
@@ -275,10 +238,8 @@ def _run_exe(exe_path: Path, label: str) -> None:
         print(f"[{label}] {result.stdout.strip()}")
 
 
-def run_acoustic_measurement(base_config: dict, overrides: dict) -> dict:
-    config = load_config()      # reload from disk
-    config.update(overrides)    # apply server-sent overrides before anything else
-
+def run_acoustic_measurement() -> dict:
+    config = load_config()
     
     if config.get("get_system_info"):
         read_system()
@@ -294,15 +255,8 @@ def run_acoustic_measurement(base_config: dict, overrides: dict) -> dict:
 
     _run_exe(EXE_CLEANUP, "cleanup")
 
-    measuredSignal = calculateRIRS(config, RX_data, chirpExcitation, method="save_ess")
+    measuredSignal = calculateRIRS(config, RX_data, chirpExcitation, config["method"])
 
-    sx, sy, sz = config["speaker_coordinates"]
     timestamp  = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename   = SAVE_DIR / f"Measured_Signal_{sx}_{sy}_{sz}_{timestamp}.csv"
+    filename   = SAVE_DIR / f"Measured_Signal_{timestamp}.csv"
     save_RIRs_to_csv(config, used_channels, unused_channels, chirpExcitation, measuredSignal, filename)
-
-    return {
-        "csv_file":   str(filename),
-        "n_mics":     len(used_channels),
-        "duration_s": round(time.time() - t_start, 4),
-    }

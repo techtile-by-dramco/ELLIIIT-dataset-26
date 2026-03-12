@@ -1,31 +1,36 @@
-from rover import run_rover, load_config, update_config
+from rover import run_rover, load_config
+import json
+from pathlib import Path
+
+BASE_DIR    = Path(__file__).parent.resolve()
+CONFIG_PATH = BASE_DIR / "config.json"
 
 
-def main():
-    example_speaker_coords = [200, 200, 0.215]
+def load_config(path: Path = CONFIG_PATH) -> dict:
+    if not path.exists():
+        raise FileNotFoundError(f"Rover config not found: {path}")
+    with open(path, "r") as f:
+        config = json.load(f)
+    _validate_config(config)
+    return config
+
+
+def _validate_config(config: dict) -> None:
+    required = ["serial_port", "feed_rate"]
+    missing = [k for k in required if k not in config]
+    if missing:
+        raise ValueError(f"Rover config is missing keys: {missing}")
+    if config["feed_rate"] <= 0:
+        raise ValueError("feed_rate must be > 0")
     
-    zmq_params = {
-        "speaker_coordinates": example_speaker_coords,
-        "feed_rate": 100
-    }
-
-    print("Loading base config...")
+def main():
     base_config = load_config()
-
-    print("Updating config with test parameters...")
-    for key, value in zmq_params.items():
-        update_config(key, value)
-
-    config = load_config()
 
     print("Running acoustic measurement...")
 
-    result = run_rover(base_config, config)
+    run_rover(100,200,base_config)
     
     print("\n--- Measurement Complete ---")
-    print(f"X: {result['x']}")
-    print(f"Y: {result['y']}")
-    print(f"Duration:         {result['duration_s']} seconds")
 
 if __name__ == "__main__":
     main()

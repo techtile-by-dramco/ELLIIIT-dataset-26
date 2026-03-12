@@ -4,11 +4,6 @@
     4.01,
     2.41
   ],
-  "speaker_coordinates": [
-    4.555,
-    2.645,
-    0.215
-  ],
   "chirp_f_start": 20000,
   "chirp_f_stop": 40000,
   "chirp_duration": 0.03,
@@ -20,5 +15,6 @@
   "min_val_in": -10,
   "sample_rate": 250000,
   "plot_signals": true,
-  "get_system_info": false
+  "get_system_info": false,
+  "method": "save_ess"
 }
