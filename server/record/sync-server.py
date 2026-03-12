@@ -17,7 +17,6 @@ from helper import *
 DEFAULT_HOST = "*"               # Host address to bind to. "*" means all available interfaces.
 DEFAULT_SYNC_PORT = "5557"       # Port used for synchronization messages.
 DEFAULT_ALIVE_PORT = "5558"      # Port used for heartbeat/alive messages.
-DEFAULT_DATA_PORT = "5559"       # Port used for data transmission.
 DEFAULT_DELAY = 2                # Seconds to wait before sending SYNC
 DEFAULT_SUBS = 42                # Expected subscribers
 def parse_args():
@@ -25,7 +24,6 @@ def parse_args():
     parser.add_argument("--host", default=DEFAULT_HOST, help="Host to bind (default: *)")
     parser.add_argument("--sync-port", default=DEFAULT_SYNC_PORT, help="Port for SYNC PUB (default: 5557)")
     parser.add_argument("--alive-port", default=DEFAULT_ALIVE_PORT, help="Port for alive/ready REP (default: 5558)")
-    parser.add_argument("--data-port", default=DEFAULT_DATA_PORT, help="Port for data REP (default: 5559)")
     parser.add_argument("--delay", type=int, default=DEFAULT_DELAY, help="Delay before sending SYNC (seconds)")
     parser.add_argument("--num-subscribers", type=int, default=DEFAULT_SUBS, help="Expected subscribers before SYNC")
     parser.add_argument(
@@ -43,7 +41,6 @@ num_subscribers = args.num_subscribers
 host = args.host
 sync_port = args.sync_port
 alive_port = args.alive_port
-data_port = args.data_port
 # Maximum time to wait for messages before breaking out of the inner loop
 WAIT_TIMEOUT = args.wait_timeout
 
@@ -57,10 +54,6 @@ sync_socket.bind("tcp://{}:{}".format(host, sync_port))
 # Create a SUB socket to listen for subscribers
 alive_socket = context.socket(zmq.REP)
 alive_socket.bind("tcp://{}:{}".format(host, alive_port))
-
-# Create a SUB socket to listen for subscribers
-data_socket = context.socket(zmq.REP)
-data_socket.bind("tcp://{}:{}".format(host, data_port))
 
 # Measurement and experiment identifiers
 meas_id = 0

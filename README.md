@@ -78,7 +78,7 @@ This yields time-of-arrival and multipath structure information and provides a s
 
 #### Ceiling Array (Phase-Calibrated)
 
-The ceiling contains 42 antennas, with a potential extension to 84 antennas. These antennas are fully phase-calibrated `run_reciprocity.py` and share a common reference clock and local oscillator distribution (`run-ref.py`), enabling coherent distributed MIMO measurements.
+The ceiling contains 42 antennas, with a potential extension to 84 antennas. These antennas share a common reference clock and local oscillator distribution (`run-ref.py`). Phase-calibrated captures are collected with `client/run_reciprocity.py`, enabling coherent distributed MIMO measurements.
 
 #### Wall Arrays (Time/Frequency Synchronized)
 
@@ -99,11 +99,29 @@ For each grid position, the following RF data are recorded:
 
 After calibration, per-antenna amplitude and phase are derived.
 
+### Runtime Capture Modes
+
+The RF client mode is selected in `experiment-settings.yaml` via `client_script_name`.
+
+- `client/run_reciprocity.py`: per SYNC cycle, performs one pilot RX capture and one internal loopback capture, then saves `<file_name>_iq.npz` with `pilot_iq`, `loopback_iq`, `pilot_phase`, `pilot_amplitude`, `loopback_phase`, `loopback_amplitude`, `hostname`, `meas_id`, and `file_name`.
+- `client/run_uncalibrated.py`: per SYNC cycle, performs pilot RX only (no loopback, no TX/BF runtime path). During pilot mode, both RX channels (0 and 1) use `TX/RX` antennas. It saves `<file_name>_iq.npz` with `pilot_iq`, `hostname`, `meas_id`, and `file_name`.
+
 ## Measurement Procedure
 
 ### Spatial Sampling
 
 Measurements are performed on a three-dimensional grid with discrete intervals in x, y, and z. The speaker and UE antenna move jointly across the predefined XYZ grid. Each grid point contains synchronized acoustic and RF measurements and an absolute 3D ground-truth position from Qualisys.
+
+### RF Synchronization Protocol
+
+`server/record/sync-server.py` currently drives the RF run loop in two phases:
+
+1. Wait for all clients to send an ALIVE/ready message on port `5558`.
+2. Publish one SYNC message on port `5557` with `<meas_id> <unique_id>`.
+3. Wait for all clients to send a post-capture DONE message, also on port `5558`.
+4. Sleep for the configured interval and repeat.
+
+Note: In this flow, the legacy server `data-port` (`5559`) is not used.
 
 ## Artificial Path and Trajectory Construction
 
