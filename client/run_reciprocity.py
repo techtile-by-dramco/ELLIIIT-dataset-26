@@ -170,7 +170,15 @@ else:
 # =============================================================================
 
 
-def rx_ref(usrp, rx_streamer, quit_event, duration, result_queue, start_time=None):
+def rx_ref(
+    usrp,
+    rx_streamer,
+    quit_event,
+    duration,
+    result_queue,
+    capture_type,
+    start_time=None,
+):
     # https://files.ettus.com/manual/page_sync.html#sync_phase_cordics
     # The CORDICs are reset at each start-of-burst command, so users should ensure that every start-of-burst also has a time spec set.
     logger.debug(f"GAIN IS CH0: {usrp.get_rx_gain(0)} CH1: {usrp.get_rx_gain(1)}")
@@ -198,8 +206,9 @@ def rx_ref(usrp, rx_streamer, quit_event, duration, result_queue, start_time=Non
             usrp.get_time_now().get_real_secs() + INIT_DELAY + 0.1
         )
     rx_streamer.issue_stream_cmd(stream_cmd)
+    num_rx = 0
+    result_pushed = False
     try:
-        num_rx = 0
         while not quit_event.is_set():
             try:
                 num_rx_i = rx_streamer.recv(recv_buffer, rx_md, timeout)
@@ -220,7 +229,20 @@ def rx_ref(usrp, rx_streamer, quit_event, duration, result_queue, start_time=Non
                             #                  args=(samples,)).start()
                             num_rx += num_rx_i
             except RuntimeError as ex:
-                logger.error("Runtime error in receive: %s", ex)
+                error_msg = f"Runtime error in receive ({capture_type}): {ex}"
+                logger.error(error_msg)
+                result_queue.put(
+                    {
+                        "ok": False,
+                        "capture_type": capture_type,
+                        "iq_capture": iq_data[:, :num_rx].copy(),
+                        "phase": None,
+                        "amplitude": None,
+                        "num_rx": num_rx,
+                        "error": error_msg,
+                    }
+                )
+                result_pushed = True
                 return
     except KeyboardInterrupt:
         pass
@@ -229,15 +251,59 @@ def rx_ref(usrp, rx_streamer, quit_event, duration, result_queue, start_time=Non
         rx_streamer.issue_stream_cmd(
             uhd.types.StreamCMD(uhd.types.StreamMode.stop_cont)
         )
-        # iq_samples = iq_data[:, int(RATE // 10) : num_rx]
-        iq_samples = iq_data[:, int(RATE * 1) : num_rx]
+        if result_pushed:
+            return
+        iq_capture = iq_data[:, :num_rx].copy()
 
-        phase_ch0, freq_slope_ch0_before, freq_slope_ch0_after = tools.get_phases_and_apply_bandpass(
-            iq_samples[0, :]
-        )
-        phase_ch1, freq_slope_ch1_before, freq_slope_ch1_after = tools.get_phases_and_apply_bandpass(
-            iq_samples[1, :]
-        )
+        if num_rx <= 0:
+            error_msg = f"No IQ samples captured during {capture_type}."
+            logger.error(error_msg)
+            result_queue.put(
+                {
+                    "ok": False,
+                    "capture_type": capture_type,
+                    "iq_capture": iq_capture,
+                    "phase": None,
+                    "amplitude": None,
+                    "num_rx": num_rx,
+                    "error": error_msg,
+                }
+            )
+            return
+
+        # Keep analysis behavior, but fall back to full capture when too short.
+        analysis_start = int(RATE * 1)
+        if num_rx > analysis_start:
+            iq_samples = iq_data[:, analysis_start:num_rx]
+        else:
+            logger.warning(
+                "Capture %s shorter than analysis window; using full capture for phase/amplitude summary.",
+                capture_type,
+            )
+            iq_samples = iq_capture
+
+        try:
+            phase_ch0, freq_slope_ch0_before, freq_slope_ch0_after = (
+                tools.get_phases_and_apply_bandpass(iq_samples[0, :])
+            )
+            phase_ch1, freq_slope_ch1_before, freq_slope_ch1_after = (
+                tools.get_phases_and_apply_bandpass(iq_samples[1, :])
+            )
+        except Exception as ex:
+            error_msg = f"IQ analysis failed for {capture_type}: {ex}"
+            logger.error(error_msg)
+            result_queue.put(
+                {
+                    "ok": False,
+                    "capture_type": capture_type,
+                    "iq_capture": iq_capture,
+                    "phase": None,
+                    "amplitude": None,
+                    "num_rx": num_rx,
+                    "error": error_msg,
+                }
+            )
+            return
 
         logger.debug(
             "Frequency offset CH0:     %.2f Hz     %.2f Hz", float(freq_slope_ch0_before), float(freq_slope_ch0_after)
@@ -285,7 +351,17 @@ def rx_ref(usrp, rx_streamer, quit_event, duration, result_queue, start_time=Non
 
         A_rms = np.sqrt(np.mean(np.abs(iq_samples) ** 2, axis=1))
 
-        result_queue.put((A_rms[1],_circ_mean)) # 
+        result_queue.put(
+            {
+                "ok": True,
+                "capture_type": capture_type,
+                "iq_capture": iq_capture,
+                "phase": float(_circ_mean),
+                "amplitude": float(A_rms[1]),
+                "num_rx": num_rx,
+                "error": "",
+            }
+        )
 
         max_I = np.max(np.abs(np.real(iq_samples)), axis=1)
         max_Q = np.max(np.abs(np.imag(iq_samples)), axis=1)
@@ -412,12 +488,12 @@ def wait_till_go_from_server(ip, _connect=True):
     sync_socket.close()
 
 
-def send_usrp_in_tx_mode(ip):
-    tx_mode_socket = context.socket(zmq.REQ)
-    tx_mode_socket.connect(f"tcp://{ip}:{5559}")
-    logger.debug("USRP IN TX MODE")
-    tx_mode_socket.send_string(HOSTNAME)
-    tx_mode_socket.close()
+def send_usrp_done_mode(ip):
+    done_mode_socket = context.socket(zmq.REQ)
+    done_mode_socket.connect(f"tcp://{ip}:{5559}")
+    logger.debug("USRP IN DONE MODE")
+    done_mode_socket.send_string(HOSTNAME)
+    done_mode_socket.close()
 
 
 def setup(usrp, SERVER_IP, connect=True):
@@ -456,22 +532,19 @@ def setup(usrp, SERVER_IP, connect=True):
     # Step2: set the time at the next pps (synchronous for all boards)
     # this is better than set_time_next_pps as we wait till the next PPS to transition and after that we set the time.
     # this ensures that the FPGA has enough time to clock in the new timespec (otherwise it could be too close to a PPS edge)
-    wait_till_go_from_server(SERVER_IP, connect)
-    logger.info("Setting device timestamp to 0...")
-    usrp.set_time_unknown_pps(uhd.types.TimeSpec(0.0))
-    logger.debug("[SYNC] Resetting time.")
-    logger.info(f"RX GAIN PROFILE CH0: {usrp.get_rx_gain_names(0)}")
-    logger.info(f"RX GAIN PROFILE CH1: {usrp.get_rx_gain_names(1)}")
-    # we wait 2 seconds to ensure a PPS rising edge occurs and latches the 0.000s value to both USRPs.
-    time.sleep(2)
-    tune_usrp(usrp, FREQ, channels, at_time=begin_time)
-    logger.info(
-        f"USRP has been tuned and setup. ({usrp.get_time_now().get_real_secs()})"
-    )
+    
     return tx_streamer, rx_streamer
 
 
-def rx_thread(usrp, rx_streamer, quit_event, duration, res, start_time=None):
+def rx_thread(
+    usrp,
+    rx_streamer,
+    quit_event,
+    duration,
+    res,
+    capture_type,
+    start_time=None,
+):
     _rx_thread = threading.Thread(
         target=rx_ref,
         args=(
@@ -480,6 +553,7 @@ def rx_thread(usrp, rx_streamer, quit_event, duration, res, start_time=None):
             quit_event,
             duration,
             res,
+            capture_type,
             start_time,
         ),
     )
@@ -650,6 +724,7 @@ def measure_pilot(
         quit_event,
         duration=CAPTURE_TIME,
         res=result_queue,
+        capture_type="pilot",
         start_time=start_time,
     )
 
@@ -673,6 +748,19 @@ def measure_pilot(
     # 8. Clear the quit event flag to prepare for the next measurement
     # ------------------------------------------------------------
     quit_event.clear()
+
+    try:
+        return  .get(tim eout=1.0)
+    except queue.Empty:
+        return {
+            "ok": False,
+            "capture_type": "pilot",
+            "iq_capture": np.empty((0, 0), dtype=np.complex64),
+            "phase": None,
+            "amplitude": None,
+            "num_rx": 0,
+            "error": "Pilot result missing from queue.",
+        }
 
 
 def measure_loopback(
@@ -744,6 +832,7 @@ def measure_loopback(
         quit_event,
         duration=CAPTURE_TIME,
         res=result_queue,
+        capture_type="loopback",
         start_time=start_time,
     )
 
@@ -770,6 +859,19 @@ def measure_loopback(
     # 8. Clear the quit event flag to prepare for the next measurement
     # ------------------------------------------------------------
     quit_event.clear()
+
+    try:
+        return result_queue.get(timeout=1.0)
+    except queue.Empty:
+        return {
+            "ok": False,
+            "capture_type": "loopback",
+            "iq_capture": np.empty((0, 0), dtype=np.complex64),
+            "phase": None,
+            "amplitude": None,
+            "num_rx": 0,
+            "error": "Loopback result missing from queue.",
+        }
 
 def get_BF(ampl_P1, phi_P1, ampl_P2, phi_P2):
     import json
@@ -870,8 +972,7 @@ def tx_phase_coh(usrp, tx_streamer, quit_event, phase_corr, at_time, long_time=T
     # Start the metadata monitoring thread
     tx_meta_thr = tx_meta_thread(tx_streamer, quit_event)
 
-    # Send USRP is in TX mode for scope measurements
-    send_usrp_in_tx_mode(SERVER_IP)
+   
 
     # Allow transmission to continue for the configured duration
     if long_time:
@@ -943,6 +1044,7 @@ def main():
     global meas_id, file_name_state
 
     args = parse_arguments()
+    quit_event = None
 
     try:
         # Attempt to open and load calibration settings from the YAML file
@@ -983,139 +1085,119 @@ def main():
         # Set up TX and RX streamers and establish connection
         tx_streamer, rx_streamer = setup(usrp, SERVER_IP, connect=True)
 
-        # Event used to control thread termination
-        quit_event = threading.Event()
 
-        # Queue to collect measurement results and communicate between threads
-        result_queue = queue.Queue()
+        while 1:
+            wait_till_go_from_server(SERVER_IP)
+            logger.info("Setting device timestamp to 0...")
+            usrp.set_time_unknown_pps(uhd.types.TimeSpec(0.0))
+            logger.debug("[SYNC] Resetting time.")
+            logger.info(f"RX GAIN PROFILE CH0: {usrp.get_rx_gain_names(0)}")
+            logger.info(f"RX GAIN PROFILE CH1: {usrp.get_rx_gain_names(1)}")
+            # we wait 2 seconds to ensure a PPS rising edge occurs and latches the 0.000s value to both USRPs.
+            time.sleep(2)
+            tune_usrp(usrp, FREQ, [0, 1], at_time=3.0)
+            logger.info(
+                f"USRP has been tuned and setup. ({usrp.get_time_now().get_real_secs()})"
+            )
 
-        # -------------------------------------------------------------------------
-        # STEP 1: Perform pilot measurement
-        # -------------------------------------------------------------------------
+            # Event used to control thread termination
+            quit_event = threading.Event()
 
-        measure_pilot(
-            usrp,
-            tx_streamer,
-            rx_streamer,
-            quit_event,
-            result_queue,
-            at_time=START_PILOT_1
-        )
+            # Queue to collect measurement results and communicate between threads
+            result_queue = queue.Queue()
 
-        # Retrieve pilot phase result
-        A_P1, phi_RP1 = result_queue.get()  # result_queue.put((A_rms[1],_circ_mean))
+            # -------------------------------------------------------------------------
+            # STEP 1: Perform pilot measurement
+            # -------------------------------------------------------------------------
 
-        # Print pilot phase
-        logger.info(
-            "Phase pilot 1 reference signal: %s (rad) / %s%s",
-            fmt(phi_RP1),
-            fmt(np.rad2deg(phi_RP1)),
-            DEG,
-        )
+            pilot_result = measure_pilot(
+                usrp,
+                tx_streamer,
+                rx_streamer,
+                quit_event,
+                result_queue,
+                at_time=START_PILOT_RX,
+            )
 
-        # -------------------------------------------------------------------------
-        # STEP 1: Perform pilot measurement
-        # -------------------------------------------------------------------------
+            if not pilot_result["ok"]:
+                logger.error(
+                    "Pilot capture failed, skipping IQ save for this run. Reason: %s",
+                    pilot_result["error"],
+                )
+                return
 
-        measure_pilot(
-            usrp,
-            tx_streamer,
-            rx_streamer,
-            quit_event,
-            result_queue,
-            at_time=START_PILOT_2,
-        )
+            # Print pilot phase
+            logger.info(
+                "Phase pilot reference signal: %s (rad) / %s%s",
+                fmt(pilot_result["phase"]),
+                fmt(np.rad2deg(pilot_result["phase"])),
+                DEG,
+            )
 
-        # Retrieve pilot phase result
-        A_P2, phi_RP2 = result_queue.get()
+            # -------------------------------------------------------------------------
+            # STEP 3: Perform internal loopback measurement with reference signal
+            # -------------------------------------------------------------------------
 
-        # Print pilot phase
-        logger.info(
-            "Phase pilot 2 reference signal: %s (rad) / %s%s",
-            fmt(phi_RP2),
-            fmt(np.rad2deg(phi_RP2)),
-            DEG,
-        )
+            loopback_result = measure_loopback(
+                usrp,
+                tx_streamer,
+                rx_streamer,
+                quit_event,
+                result_queue,
+                at_time=START_LB_RX,
+            )
 
-        # -------------------------------------------------------------------------
-        # STEP 3: Perform internal loopback measurement with reference signal
-        # -------------------------------------------------------------------------
+            if not loopback_result["ok"]:
+                logger.error(
+                    "Loopback capture failed, skipping IQ save for this run. Reason: %s",
+                    loopback_result["error"],
+                )
+                return
 
-        measure_loopback(
-            usrp,
-            tx_streamer,
-            rx_streamer,
-            quit_event,
-            result_queue,
-            at_time=START_LB,
-        )
+            # Print loopback phase
+            logger.info(
+                "Phase LB reference signal: %s (rad) / %s%s",
+                fmt(loopback_result["phase"]),
+                fmt(np.rad2deg(loopback_result["phase"])),
+                DEG,
+            )
 
-        # Retrieve loopback phase result
-        _, phi_RL = result_queue.get()
+            pilot_iq = pilot_result["iq_capture"]
+            loopback_iq = loopback_result["iq_capture"]
 
-        # Print loopback phase
-        logger.info(
-            "Phase LB reference signal: %s (rad) / %s%s",
-            fmt(phi_RL),
-            fmt(np.rad2deg(phi_RL)),
-            DEG,
-        )
+            if pilot_iq.size == 0 or loopback_iq.size == 0:
+                logger.error(
+                    "One or more captures are empty (pilot size=%d, loopback size=%d); skipping IQ save for this run.",
+                    pilot_iq.size,
+                    loopback_iq.size,
+                )
+                return
 
-        # -------------------------------------------------------------------------
-        # STEP 4: Load cable phase correction from YAML configuration (if available)
-        # -------------------------------------------------------------------------
-        phi_cable = 0
-        with open(
-            os.path.join(os.path.dirname(__file__), "ref-RF-cable.yml"), "r"
-        ) as phases_yaml:
-            try:
-                phases_dict = yaml.safe_load(phases_yaml)
-                if HOSTNAME in phases_dict.keys():
-                    phi_cable = phases_dict[HOSTNAME]
-                    logger.debug(f"Applying cable phase correction: {phi_cable}")
-                else:
-                    logger.error("Phase offset not found in ref-RF-cable.yml")
-            except yaml.YAMLError as exc:
-                print(exc)
+            iq_file_name = f"{file_name}_iq.npz"
+            np.savez(
+                iq_file_name,
+                pilot_iq=pilot_iq,
+                loopback_iq=loopback_iq,
+                pilot_phase=pilot_result["phase"],
+                pilot_amplitude=pilot_result["amplitude"],
+                loopback_phase=loopback_result["phase"],
+                loopback_amplitude=loopback_result["amplitude"],
+                hostname=HOSTNAME,
+                meas_id=meas_id,
+                file_name=file_name,
+            )
+            logger.info("Saved pilot and loopback IQ captures to %s", iq_file_name)
 
-        phi_BF = get_BF(A_P1, -phi_RP1 + np.deg2rad(phi_cable), A_P2,-phi_RP2 + np.deg2rad(phi_cable))
-
-        if BEAMFORMER == "MRT":
-            phi_BF = phi_RP2 - np.deg2rad(phi_cable)
-
-        alive_socket = context.socket(zmq.REQ)
-        alive_socket.connect(f"tcp://{SERVER_IP}:{5558}")
-        logger.debug("Sending TX MODE")
-        alive_socket.send_string(f"{HOSTNAME} TX")
-        alive_socket.close()
-
-        # no negative sign for LB and P as here in the code REF-P and REF-LB is done. In the paper it is vice versa. Hence, phi_LB = - phi_L-R in the paper
-        # same reason here - phi_cable
-        tx_phase = phi_RL - np.deg2rad(phi_cable) + phi_BF
-        logger.info(
-            "Phase correction: %s (rad) / %s%s",
-            fmt(tx_phase),
-            fmt(np.rad2deg(tx_phase)),
-            DEG,
-        )
-
-        tx_phase_coh(
-            usrp,
-            tx_streamer,
-            quit_event,
-            # phase_corr=phi_LB + phi_P + np.deg2rad(phi_cable),
-            phase_corr=tx_phase,
-            at_time=START_TX,
-            long_time=True,  # Set long_time True if you want to transmit longer than 10 seconds
-        )
-
-        print("DONE")
+            print("DONE")
+             # Send USRP is in TX mode for scope measurements
+            send_usrp_done_mode(SERVER_IP)
 
     except Exception as e:
         # Handle any exception gracefully
         logger.debug("Sending signal to stop!")
         logger.error(e)
-        quit_event.set()
+        if quit_event is not None:
+            quit_event.set()
 
     finally:
         # Allow threads and streams to close properly

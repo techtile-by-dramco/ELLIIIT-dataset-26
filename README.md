@@ -10,6 +10,8 @@ All measurements include ground-truth position references obtained using a Quali
 
 The ultrasonic speaker and the RF UE antenna are mechanically co-located and mounted on the same positioning rig. They are moved jointly across a predefined XYZ grid inside the Techtile measurement volume, enabling a one-to-one correspondence between acoustic and RF observations at each sampled position.
 
+**TODO ADD PICTURE OF HOLDER**
+
 This ensures:
 
 - Spatial alignment between acoustic and RF measurements
@@ -76,7 +78,7 @@ This yields time-of-arrival and multipath structure information and provides a s
 
 #### Ceiling Array (Phase-Calibrated)
 
-The ceiling contains 42 antennas, with a potential extension to 84 antennas. These antennas are fully phase-calibrated and share a common reference clock and local oscillator distribution, enabling coherent distributed MIMO measurements.
+The ceiling contains 42 antennas, with a potential extension to 84 antennas. These antennas are fully phase-calibrated `run_reciprocity.py` and share a common reference clock and local oscillator distribution (`run-ref.py`), enabling coherent distributed MIMO measurements.
 
 #### Wall Arrays (Time/Frequency Synchronized)
 
@@ -84,7 +86,7 @@ Approximately 100 antennas are embedded in the walls. These antennas are time- a
 
 ### Transmitted Signal
 
-The RF excitation consists of a narrowband single-carrier waveform to enable stable amplitude estimation and precise phase extraction.
+The RF excitation consists of a narrowband single-carrier waveform to enable stable amplitude estimation and precise phase extraction. This pilot is in `client/usrp_pilot.py`.
 
 ### Recorded Data
 

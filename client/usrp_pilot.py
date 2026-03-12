@@ -46,7 +46,6 @@ MEAS_TYPE_PHASE_DIFF = "PDIFF"
 # Global variables
 meas_id = 0
 tx_phase = None
-pilot_num = 1
 
 results = []
 
@@ -102,9 +101,7 @@ formatter = LogFormatter(
 console.setFormatter(formatter)
 
 
-with open(
-    os.path.join(os.path.dirname(__file__), "cal-settings.yml"), "r"
-) as file:
+with open(os.path.join(os.path.dirname(__file__), "cal-settings.yml"), "r") as file:
     logger.debug("Loading all default conf values...")
     vars = yaml.safe_load(file)
     globals().update(vars)  # update the global variables with the vars in yaml
@@ -361,9 +358,9 @@ def rx_ref(
         # results = samples[LOOPBACK_RX_CH,:]
 
 
-def wait_till_go_from_server(ip):
+def wait_till_go_from_server(ip, _connect=True):
 
-    global meas_id, file_open, data_file, file_name, pilot_num
+    global meas_id, file_open, data_file, file_name
     # Connect to the publisher's address
     logger.debug("Connecting to server %s.", ip)
     sync_socket = context.socket(zmq.SUB)
@@ -376,7 +373,7 @@ def wait_till_go_from_server(ip):
     sync_socket.subscribe("")
 
     logger.debug("Sending ALIVE")
-    alive_socket.send_string(f"PILOT {pilot_num}")
+    alive_socket.send_string("PILOT")
     # Receives a string format message
     logger.debug("Waiting on SYNC from server %s.", ip)
 
@@ -541,7 +538,7 @@ def tune_usrp(usrp, freq, channels, at_time):
     logger.info("TX LO is locked")
 
 
-def setup(usrp):
+def setup(usrp, server_ip, connect=True):
 
     rate = RATE
 
@@ -577,18 +574,7 @@ def setup(usrp):
     # Step2: set the time at the next pps (synchronous for all boards)
     # this is better than set_time_next_pps as we wait till the next PPS to transition and after that we set the time.
     # this ensures that the FPGA has enough time to clock in the new timespec (otherwise it could be too close to a PPS edge)
-    wait_till_go_from_server(SERVER_IP)
-    logger.info("Setting device timestamp to 0...")
-    usrp.set_time_unknown_pps(uhd.types.TimeSpec(0.0))
-    logger.debug("[SYNC] Resetting time.")
-    # we wait 2 seconds to ensure a PPS rising edge occurs and latches the 0.000s value to both USRPs.
-    time.sleep(2)
 
-    tune_usrp(usrp, FREQ, channels, at_time=begin_time)
-
-    logger.info(
-        f"USRP has been tuned and setup. ({usrp.get_time_now().get_real_secs()})"
-    )
 
     return tx_streamer, rx_streamer
 
@@ -968,7 +954,6 @@ def tx_pilot(usrp, tx_streamer, quit_event, at_time):
     start_time = uhd.types.TimeSpec(at_time)
 
     logger.debug(starting_in(usrp, at_time))
-    logger.debug("TX pilot scheduled start time: %.6fs", start_time.get_real_secs())
 
     logger.debug(
         f"TX CH0:{np.rad2deg(phases[0]):.2f} and CH1:{np.rad2deg(phases[1]):.2f}"
@@ -985,7 +970,9 @@ def tx_pilot(usrp, tx_streamer, quit_event, at_time):
 
     tx_meta_thr = tx_meta_thread(tx_streamer, quit_event)
 
-    time.sleep(CAPTURE_TIME + delta(usrp, at_time) + 2.0)  # TX 1 sec longer than RX
+    time.sleep(
+        PILOT_TX_DURATION + delta(usrp, at_time)
+    )  # TX 1 sec longer than RX
 
     quit_event.set()
 
@@ -1027,23 +1014,17 @@ def get_current_time(usrp):
 
 
 def parse_arguments():
-    global tx_phase, SERVER_IP, pilot_num
+    global tx_phase, SERVER_IP
 
     # Create the parser
     parser = argparse.ArgumentParser(description="Transmit with phase difference.")
 
     # Add the --phase argument
     parser.add_argument(
-        "--phase",
-        type=int,
-        default=0,
-        help="Phase value for transmission",
+        "--phase", type=int, help="Phase value for transmission", required=True
     )
     parser.add_argument(
-        "--pilot",
-        type=int,
-        default=1,
-        help="Pilot number identifier (default: 1)",
+        "--ip", type=str, help="ip address of the server", required=False
     )
 
     # Parse the arguments
@@ -1051,8 +1032,20 @@ def parse_arguments():
 
     # Set the global variable tx_phase to the value of --phase
     tx_phase = args.phase
-    pilot_num = args.pilot
 
+    if args.ip is not None:
+        if args.ip:  # and not empty
+            logger.debug("Setting server IP to: " + args.ip)
+            SERVER_IP = args.ip
+
+def send_usrp_done_mode(ip):
+    done_mode_socket = context.socket(zmq.REQ)
+    done_mode_socket.connect(f"tcp://{ip}:{5559}")
+    logger.debug("USRP IN DONE MODE")
+    done_mode_socket.send_string(HOSTNAME)
+    done_mode_socket.close()
+
+    
 def main():
     # "mode_n=integer" #
 
@@ -1064,19 +1057,36 @@ def main():
     # Now tx_phase can be used globally
     print(f"The phase value is set to: {tx_phase}")
 
+    _connect = True
     try:
         usrp = uhd.usrp.MultiUSRP("fpga=usrp_b210_fpga.bin")
         logger.info("Using Device: %s", usrp.get_pp_string())
-        tx_streamer, _ = setup(usrp)
-        quit_event = threading.Event()
+        tx_streamer, _ = setup(usrp, SERVER_IP, connect=_connect)
 
-        start_time = START_PILOT_1
-        if pilot_num == 2:
-            start_time = START_PILOT_2
+        while 1:
+            wait_till_go_from_server(SERVER_IP)
+            logger.info("Setting device timestamp to 0...")
+            usrp.set_time_unknown_pps(uhd.types.TimeSpec(0.0))
+            logger.debug("[SYNC] Resetting time.")
+            # we wait 2 seconds to ensure a PPS rising edge occurs and latches the 0.000s value to both USRPs.
+            time.sleep(2)
 
-        _ = tx_pilot(usrp, tx_streamer, quit_event, at_time=start_time)
+            tune_usrp(usrp, FREQ, [0], at_time=3)
 
-        print("My job is done")
+            logger.info(
+                f"USRP has been tuned and setup. ({usrp.get_time_now().get_real_secs()})"
+            )
+
+            quit_event = threading.Event()
+
+            _connect = False
+
+            tx_thr = tx_meta_thr = None
+
+            _ = tx_pilot(usrp, tx_streamer, quit_event, at_time=START_PILOT_TX)
+
+            print("My job is done")
+            send_usrp_done_mode(SERVER_IP)
 
     except KeyboardInterrupt:
 

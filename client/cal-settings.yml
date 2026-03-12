@@ -30,24 +30,23 @@ FREQ: !!float 920e6
 MIN_PLL_VAR: !!float 0.0001  
 # Minimum allowed PLL variance for stable frequency locking.
 
-CAPTURE_TIME: !!float 5 
+CAPTURE_TIME: !!float 5
 # Duration for capturing data in seconds.
-
-TX_TIME: !!float 72000  
-# Total transmission time in seconds (here, 2 hours).
 
 # SERVER_IP: "192.168.10.54" 
 SERVER_IP: "192.108.2.57"  # TECHTILE JARNE SERVER
 # SERVER_IP: "192.108.10.38"  # Client 9 Gilles
 # IP address of the server to connect to.
 
+
+PILOT_TX_DURATION: !!float 10
+
 # =============================================================================
 #                           TIMING
 # =============================================================================
-START_PILOT_1: 10
-START_PILOT_2: 20
-START_LB: 30
-START_TX: 60
+START_PILOT_TX: 5
+START_PILOT_RX: 6
+START_LB_RX: 18
 
 
 # =============================================================================
@@ -58,5 +57,3 @@ ALIVE_PORT: "5558"      # Port used for heartbeat/alive messages.
 DATA_PORT:  "5559"       # Port used for data transmission.
 PILOT_PORT:  "5560"     # Port used for PILOT transmission
 
-
-BEAMFORMER: AZF # or AZF or MRT
