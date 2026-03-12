@@ -6,6 +6,58 @@ This document describes the methodology used to construct synchronized acoustic 
 
 All measurements include ground-truth position references obtained using a Qualisys motion capture system. The dataset also contains spatial coordinates of the measurement equipment for reproducible geometric reconstruction, including the absolute 3D position of both the ultrasonic speaker and the RF UE antenna for every measurement snapshot.
 
+## Experiment Setup
+
+1. Clone the repository in your VM:
+
+```bash
+git clone https://github.com/techtile-by-dramco/ELLIIIT-dataset-26.git
+```
+
+2. Bootstrap the server virtual environment and pull tile-management dependencies:
+
+```bash
+cd ELLIIIT-dataset-26/server
+./setup-server.sh
+source bin/activate
+cd ..
+```
+
+3. Configure `experiment-settings.yaml`:
+
+- Set server host/IP
+- Select tile group(s)
+- Configure RF parameters
+- Set `client_script_name` and `client_script_args`
+- Set `extra_packages` (apt packages to install on tiles)
+
+4. Prepare tiles (apt, repositories, UHD) from repo root while the server venv is active:
+
+```bash
+python server/setup-clients.py --ansible-output
+```
+
+Optional flags:
+
+- `--skip-apt`
+- `--repos-only`
+- `--install-only`
+- `--check-uhd-only`
+
+5. Push code and settings to tiles:
+
+```bash
+python server/update-experiment.py --ansible-output
+```
+
+6. Start or stop the experiment service:
+
+```bash
+python server/run-clients.py --start
+# or
+python server/run-clients.py --stop
+```
+
 ## Joint Acoustic and RF Measurement Setup
 
 The ultrasonic speaker and the RF UE antenna are mechanically co-located and mounted on the same positioning rig. They are moved jointly across a predefined XYZ grid inside the Techtile measurement volume, enabling a one-to-one correspondence between acoustic and RF observations at each sampled position.
