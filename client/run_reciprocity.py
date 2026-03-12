@@ -490,7 +490,7 @@ def wait_till_go_from_server(ip, _connect=True):
 
 def send_usrp_done_mode(ip):
     done_mode_socket = context.socket(zmq.REQ)
-    done_mode_socket.connect(f"tcp://{ip}:{5559}")
+    done_mode_socket.connect(f"tcp://{ip}:{5558}")
     logger.debug("USRP IN DONE MODE")
     done_mode_socket.send_string(HOSTNAME)
     done_mode_socket.close()
@@ -750,7 +750,7 @@ def measure_pilot(
     quit_event.clear()
 
     try:
-        return  .get(tim eout=1.0)
+        return result_queue.get(timeout=1.0)
     except queue.Empty:
         return {
             "ok": False,
