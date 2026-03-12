@@ -6,7 +6,7 @@ A Python based system for performing and analysing room impulse response (RIR) m
 
 ## Overview
 
-The system emits a logarithmic chirp excitation signal through a speaker and simultaneously records the response across an array of up to 98 microphones. RIRs can be extracted via deconvolution and saved to CSV for post-processing and comparison against simulated responses from [pyroomacoustics](https://pyroomacoustics.readthedocs.io/).
+The system emits a logarithmic chirp excitation signal through a speaker and simultaneously records the response across an array of up to 98 distributed microphones. RIRs can be extracted via deconvolution and saved to CSV for post-processing and comparison against simulated responses from [pyroomacoustics](https://pyroomacoustics.readthedocs.io/).
 
 Measurements can be triggered locally or remotely via a ZMQ server/client protocol, with per-measurement parameter overrides (speaker position, chirp parameters, etc.).
 
@@ -21,6 +21,7 @@ acoustics/
 ├── dicts.py                        # Microphone and speaker channel/coordinate mappings
 ├── simulate_acousticMeasurement.py # Run a measurement locally (no ZMQ)
 ├── ZMQclient_acoustic.py           # ZMQ DEALER client (runs on measurement machine)
+├── readme.md                       # Documentation for the folder
 │
 ├── results/
 │   ├── direct_rir/                 # CSVs from deconvolved RIR measurements
@@ -52,7 +53,7 @@ All core parameters live in `config.json`:
 
 ## Measurement Methods
 
-RIRs can be extracted using three methods, selected via the `method` argument in `calculateRIRS()`:
+RIRs can be extracted using two methods `fft` and `deconv`, selected via the method argument in calculateRIRS(). The first method `save_ess` retrieves the received ESS.
 
 - **`save_ess`**: saves the raw recorded sweep for offline deconvolution (default)
 - **`deconv`**: applies an inverse filter in the time domain immediately after acquisition
@@ -62,18 +63,29 @@ RIRs can be extracted using three methods, selected via the `method` argument in
 
 ## Measurement Plan (`measureConfig.json`)
 
-The orchestrator accepts a JSON measurement plan, a list of parameter dicts, one per cycle. Each entry overrides any subset of the default `config.json` values for that cycle. Only `speaker_coordinates` is required; all chirp parameters fall back to `config.json` defaults if omitted.
+The orchestrator accepts a JSON measurement plan, a list of parameter dicts, one per cycle. Each entry overrides any subset of the default `config.json` values for that cycle. Only `speaker_coordinates` is required. All chirp parameters fall back to `config.json` defaults if omitted (parameters are kept from the last cycle in the `config.json`).
 
 ```json
 [
-  {"speaker_coordinates": [2.0, 2.0, 1.2]},
-  {"speaker_coordinates": [3.0, 2.0, 1.2]},
   {
-    "speaker_coordinates": [6.0, 3.0, 0.215],
+    "comment": "cycle - 1",
+    "speaker_coordinates": [2.0, 2.0, 1.2]
+  },
+  {
+    "comment": "cycle - 2",
+    "speaker_coordinates": [3.0, 3.0, 0.215],
+    "chirp_f_start": 20000,
+    "chirp_f_stop":  40000,
+    "chirp_duration": 0.03,
+    "chirp_ampl": 0.050
+  },
+  {
+    "comment": "cycle - 3",
+    "speaker_coordinates": [4.0, 4.0, 2.0],
     "chirp_f_start": 10000,
     "chirp_f_stop":  35000,
     "chirp_duration": 0.06,
-    "chirp_ampl": 0.074
+    "chirp_ampl": 0.075
   }
 ]
 ```
@@ -105,11 +117,8 @@ Start the measurement client on the acquisition machine:
 python ZMQclient_acoustic.py --connect tcp://<server_ip>:5555 --id meas1
 ```
 
-The server sends `START_MEAS` with per-cycle parameters; the client replies with `MEAS_DONE` once acquisition is complete.
+The server sends `START_MEAS` with per-cycle parameters, the client replies with `MEAS_DONE` once acquisition is complete.
 
----
-
-## ZMQ Communication Flow
 ```
 Server                            meas1 (ZMQclient_acoustic)
   |                                       |
@@ -138,10 +147,11 @@ Server                            meas1 (ZMQclient_acoustic)
 Each measurement is saved as a CSV with one row per microphone:
 
 ```
-speaker, duration, f_start, f_stop, chirp_amp, microphone_coordinates, microphone_label, values
-[4.555, 2.645, 0.215], 0.03, 20000, 40000, 0.075, (7.408, 4, 2.066), A11, [0.002, ...]
+speaker,duration,f_start,f_stop,chirp_amp,microphone_coordinates,microphone_label,values
+"[2.0, 2, 1.2]", 0.03, 20000, 40000, 0.075, "(7.408, 4, 2.066)", A11, "[1.7352849137819328, 1.6556249147091486, 1.7455938571350291, ...]" //ESS-values of the working microphones
 ...
-chirp_excitation, chirp_excitation, [0.075, ...]
+"[2.0, 2, 1.2]",0.03,20000,40000,0.075,"(0.196, 3.467, 2.4)",G10,unused //The non‑working microphones
+"[2.0, 2, 1.2]",0.03,20000,40000,0.075,chirp_excitation,chirp_excitation,"[0.075, 0.0657221617116399, 0.04018112557784608, ...]" //ESS-value of the excitating ESS
 ```
 
 Channels with hardware faults are written with `values = unused`.
