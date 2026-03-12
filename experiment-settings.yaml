@@ -1,7 +1,7 @@
 # Experiment settings
 
 # Experiment repository
-experiment_repo: "geometry-based-wireless-power-transfer"  # github repo name
+experiment_repo: "ELLIIIT-dataset-26"  # github repo name
 organisation: "techtile-by-dramco"  # github org
 
 # Server settings
@@ -36,7 +36,7 @@ extra_packages:                     # list of extra packages to be installed on 
 client_script_name: "run_reciprocity.py"
 client_script_args:
   - "--config-file"
-  - "/home/pi/geometry-based-wireless-power-transfer/experiment-settings.yaml"
+  - "/home/pi/ELLIIIT-dataset-26/experiment-settings.yaml"
   # - "--tx-phase-file"
   # - "tx-phases-friis.yml"
 
