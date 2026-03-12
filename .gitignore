@@ -5,3 +5,51 @@ acoustic/DATA/Measured_RIRs_4.58_2.68_0.2_20260310_150838.csv
 acoustic/DATA/Measured_RIRs_4.58_2.68_0.2_20260310_151103.csv
 acoustic/DATA/Measured_RIRs_4.58_2.68_0.2_20260310_152527.csv
 acoustic/DATA/Measured_RIRs_4.58_2.68_0.2_20260310_152555.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.Python
+build/
+dist/
+.eggs/
+*.egg-info/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Testing, linting, and coverage
+.coverage
+.coverage.*
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+htmlcov/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.code-workspace
+
+# Local environment files
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
