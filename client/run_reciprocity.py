@@ -42,6 +42,7 @@ results = []
 
 SWITCH_LOOPBACK_MODE = 0x00000006  # which is 110
 SWITCH_RESET_MODE = 0x00000000
+ENABLE_USER_SETTINGS_SWITCH = True
 
 context = zmq.Context()
 
@@ -52,6 +53,8 @@ iq_socket.bind(f"tcp://*:{50001}")
 HOSTNAME = socket.gethostname()[4:]
 file_open = False
 # SERVER_IP = None  # populated by settings.yml
+_user_settings_iface = None
+_user_settings_iface_attempted = False
 
 
 # =============================================================================
@@ -399,6 +402,27 @@ def setup_clock(usrp, clock_src, num_mboards):
     return True
 
 
+def get_user_settings_iface_once(usrp, chan=1):
+    """Get and cache the UHD user settings interface once per process.
+
+    Repeated calls to get_user_settings_iface() can be unstable on some setups.
+    """
+    global _user_settings_iface, _user_settings_iface_attempted
+    if _user_settings_iface_attempted:
+        return _user_settings_iface
+
+    _user_settings_iface_attempted = True
+    try:
+        _user_settings_iface = usrp.get_user_settings_iface(chan)
+        if _user_settings_iface is None:
+            logger.warning("User settings interface is unavailable (chan=%d).", chan)
+    except Exception as ex:
+        logger.warning("Failed to acquire user settings interface: %s", ex)
+        _user_settings_iface = None
+
+    return _user_settings_iface
+
+
 def setup_pps(usrp, pps):
     """Setup the PPS source"""
 
@@ -464,8 +488,11 @@ def wait_till_go_from_server(ip, _connect=True):
 
     alive_socket = context.socket(zmq.REQ)
 
-    sync_socket.connect(f"tcp://{ip}:{5557}")
-    alive_socket.connect(f"tcp://{ip}:{5558}")
+    sync_port = str(globals().get("SYNC_PORT", "5557"))
+    alive_port = str(globals().get("ALIVE_PORT", "5558"))
+
+    sync_socket.connect(f"tcp://{ip}:{sync_port}")
+    alive_socket.connect(f"tcp://{ip}:{alive_port}")
     # Subscribe to topics
     sync_socket.subscribe("")
 
@@ -489,8 +516,9 @@ def wait_till_go_from_server(ip, _connect=True):
 
 
 def send_usrp_done_mode(ip):
+    done_port = str(globals().get("DONE_PORT", globals().get("DATA_PORT", "5559")))
     done_mode_socket = context.socket(zmq.REQ)
-    done_mode_socket.connect(f"tcp://{ip}:{5558}")
+    done_mode_socket.connect(f"tcp://{ip}:{done_port}")
     logger.debug("USRP IN DONE MODE")
     done_mode_socket.send_string(HOSTNAME)
     done_mode_socket.close()
@@ -796,19 +824,18 @@ def measure_loopback(
     #    NOTE: This interface is no longer available in UHD 4.x.
     # ------------------------------------------------------------
     user_settings = None
-    try:
-        user_settings = usrp.get_user_settings_iface(1)
-        if user_settings:
-            # Read current register value (for debug)
-            logger.debug(user_settings.peek32(0))
-            # Write a value to activate loopback mode
-            user_settings.poke32(0, SWITCH_LOOPBACK_MODE)
-            # Read again to verify the register value was updated
-            logger.debug(user_settings.peek32(0))
+    if ENABLE_USER_SETTINGS_SWITCH:
+        user_settings = get_user_settings_iface_once(usrp, chan=1)
+        if user_settings is not None:
+            try:
+                user_settings.poke32(0, SWITCH_LOOPBACK_MODE)
+            except Exception as e:
+                logger.error("Unable to switch loopback mode: %s", e)
+                user_settings = None
         else:
-            logger.error("Cannot write to user settings.")
-    except Exception as e:
-        logger.error(e)
+            logger.warning(
+                "Loopback switch control disabled: no user settings interface."
+            )
 
     # ------------------------------------------------------------
     # 4. Start transmit (TX), metadata, and receive (RX) threads
@@ -852,8 +879,11 @@ def measure_loopback(
     # ------------------------------------------------------------
     # 7. Reset the RF switch control (disable loopback mode)
     # ------------------------------------------------------------
-    if user_settings:
-        user_settings.poke32(0, SWITCH_RESET_MODE)
+    if user_settings is not None:
+        try:
+            user_settings.poke32(0, SWITCH_RESET_MODE)
+        except Exception as e:
+            logger.error("Unable to reset loopback switch mode: %s", e)
 
     # ------------------------------------------------------------
     # 8. Clear the quit event flag to prepare for the next measurement

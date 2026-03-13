@@ -17,6 +17,7 @@ from helper import *
 DEFAULT_HOST = "*"               # Host address to bind to. "*" means all available interfaces.
 DEFAULT_SYNC_PORT = "5557"       # Port used for synchronization messages.
 DEFAULT_ALIVE_PORT = "5558"      # Port used for heartbeat/alive messages.
+DEFAULT_DONE_PORT = "5559"       # Port used for post-capture DONE messages.
 DEFAULT_DELAY = 2                # Seconds to wait before sending SYNC
 DEFAULT_SUBS = 42                # Expected subscribers
 def parse_args():
@@ -24,6 +25,7 @@ def parse_args():
     parser.add_argument("--host", default=DEFAULT_HOST, help="Host to bind (default: *)")
     parser.add_argument("--sync-port", default=DEFAULT_SYNC_PORT, help="Port for SYNC PUB (default: 5557)")
     parser.add_argument("--alive-port", default=DEFAULT_ALIVE_PORT, help="Port for alive/ready REP (default: 5558)")
+    parser.add_argument("--done-port", default=DEFAULT_DONE_PORT, help="Port for DONE REP (default: 5559)")
     parser.add_argument("--delay", type=int, default=DEFAULT_DELAY, help="Delay before sending SYNC (seconds)")
     parser.add_argument("--num-subscribers", type=int, default=DEFAULT_SUBS, help="Expected subscribers before SYNC")
     parser.add_argument(
@@ -41,6 +43,7 @@ num_subscribers = args.num_subscribers
 host = args.host
 sync_port = args.sync_port
 alive_port = args.alive_port
+done_port = args.done_port
 # Maximum time to wait for messages before breaking out of the inner loop
 WAIT_TIMEOUT = args.wait_timeout
 
@@ -55,6 +58,10 @@ sync_socket.bind("tcp://{}:{}".format(host, sync_port))
 alive_socket = context.socket(zmq.REP)
 alive_socket.bind("tcp://{}:{}".format(host, alive_port))
 
+# Dedicated socket for post-capture DONE messages.
+done_socket = context.socket(zmq.REP)
+done_socket.bind("tcp://{}:{}".format(host, done_port))
+
 # Measurement and experiment identifiers
 meas_id = 0
 
@@ -65,8 +72,11 @@ unique_id = str(datetime.now(UTC).strftime("%Y%m%d%H%M%S"))
 # script_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)))
 
 # ZeroMQ poller setup
-poller = zmq.Poller()
-poller.register(alive_socket, zmq.POLLIN)  # Register the alive socket to monitor incoming messages
+alive_poller = zmq.Poller()
+alive_poller.register(alive_socket, zmq.POLLIN)
+
+done_poller = zmq.Poller()
+done_poller.register(done_socket, zmq.POLLIN)
 
 # Track time of the last received message
 new_msg_received = 0
@@ -100,7 +110,7 @@ with open(output_path, "w") as f:
 
         while messages_received < num_subscribers:
             # Poll the socket for incoming messages with a 1-second timeout
-            socks = dict(poller.poll(1000))
+            socks = dict(alive_poller.poll(1000))
 
             # If some messages were received but no new message comes within WAIT_TIMEOUT, break
             if messages_received > 2 and time.time() - new_msg_received > WAIT_TIMEOUT:
@@ -139,8 +149,8 @@ with open(output_path, "w") as f:
 
         # *** EXTENSION *** JVM
 
-        # Wait for all subscribers to send a TX MODE message
-        print(f"Waiting for {num_subscribers} subscribers to send a TX Mode ...")
+        # Wait for all subscribers to send a DONE message on the dedicated DONE socket
+        print(f"Waiting for {num_subscribers} subscribers to send DONE ...")
 
         # Track number of messages received from subscribers
         messages_received = 0
@@ -148,18 +158,18 @@ with open(output_path, "w") as f:
 
         while messages_received < num_subscribers:
             # Poll the socket for incoming messages with a 1-second timeout
-            socks = dict(poller.poll(1000))
+            socks = dict(done_poller.poll(1000))
 
             # If some messages were received but no new message comes within WAIT_TIMEOUT, break
             if messages_received > 2 and time.time() - new_msg_received > WAIT_TIMEOUT:
                 break
 
-            if alive_socket in socks and socks[alive_socket] == zmq.POLLIN:
+            if done_socket in socks and socks[done_socket] == zmq.POLLIN:
                 # Record time when a new message is received
                 new_msg_received = time.time()
 
                 # Receive the message string from the subscriber
-                message = alive_socket.recv_string()
+                message = done_socket.recv_string()
                 messages_received += 1
 
                 # Print received message and write it to the YAML file
@@ -169,7 +179,7 @@ with open(output_path, "w") as f:
                 response = "Response from server"
 
                 # Send response back to the subscriber
-                alive_socket.send_string(response)
+                done_socket.send_string(response)
 
         print(f"Wait 10s ...")
 
