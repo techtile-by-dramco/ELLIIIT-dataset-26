@@ -62,7 +62,7 @@ python server/run-clients.py --stop
 
 The ultrasonic speaker and the RF UE antenna are mechanically co-located and mounted on the same positioning rig. They are moved jointly across a predefined XYZ grid inside the Techtile measurement volume, enabling a one-to-one correspondence between acoustic and RF observations at each sampled position.
 
-**TODO ADD PICTURE OF HOLDER**
+![holder](holder.jpg)
 
 This ensures:
 
