@@ -367,8 +367,11 @@ def wait_till_go_from_server(ip, _connect=True):
 
     alive_socket = context.socket(zmq.REQ)
 
-    sync_socket.connect(f"tcp://{ip}:{5557}")
-    alive_socket.connect(f"tcp://{ip}:{5558}")
+    sync_port = str(globals().get("SYNC_PORT", "5557"))
+    alive_port = str(globals().get("ALIVE_PORT", "5558"))
+
+    sync_socket.connect(f"tcp://{ip}:{sync_port}")
+    alive_socket.connect(f"tcp://{ip}:{alive_port}")
     # Subscribe to topics
     sync_socket.subscribe("")
 
@@ -1039,8 +1042,9 @@ def parse_arguments():
             SERVER_IP = args.ip
 
 def send_usrp_done_mode(ip):
+    done_port = str(globals().get("DONE_PORT", globals().get("DATA_PORT", "5559")))
     done_mode_socket = context.socket(zmq.REQ)
-    done_mode_socket.connect(f"tcp://{ip}:{5559}")
+    done_mode_socket.connect(f"tcp://{ip}:{done_port}")
     logger.debug("USRP IN DONE MODE")
     done_mode_socket.send_string(HOSTNAME)
     done_mode_socket.close()
