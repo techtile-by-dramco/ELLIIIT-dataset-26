@@ -1,4 +1,4 @@
-from acousticMeasurement import run_acoustic_measurement, load_config, update_config
+from acousticMeasurement import run_acoustic_measurement
 import csv
 import ast
 import json
@@ -180,7 +180,7 @@ def plot_random_RIRs_with_sim(mic_pos, csv_filename: Path, config_filename: Path
 
 
 BASE_DIR    = Path(__file__).resolve().parent
-CSV_FILE    = BASE_DIR / "Measured_Signal_4.555_2.645_0.215_20260311_170951.csv"
+CSV_FILE    = BASE_DIR / "FILL_IN_THE_CSV_OF_THE_LAST_RECORDED_SIGNAL_IN_MAP_RESULTS.py"
 CONFIG_FILE = BASE_DIR.parent / "config.json"
 
 def main():

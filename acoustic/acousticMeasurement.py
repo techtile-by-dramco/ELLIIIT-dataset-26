@@ -5,7 +5,6 @@ import subprocess
 from pathlib import Path
 import time
 from datetime import datetime
-import pyroomacoustics as pra
 import numpy as np
 from scipy.signal import chirp, convolve
 import nidaqmx as ni
