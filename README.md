@@ -127,6 +127,9 @@ This yields time-of-arrival and multipath structure information and provides a s
 
 ## RF Dataset
 
+<details>
+<summary><strong>RF Dataset (Optional, Click to Expand)</strong></summary>
+
 ### Infrastructure Configuration
 
 #### Ceiling Array (Phase-Calibrated)
@@ -159,11 +162,35 @@ The RF client mode is selected in `experiment-settings.yaml` via `client_script_
 - `client/run_reciprocity.py`: per SYNC cycle, performs one pilot RX capture and one internal loopback capture, then saves `<file_name>_iq.npz` with `pilot_iq`, `loopback_iq`, `pilot_phase`, `pilot_amplitude`, `loopback_phase`, `loopback_amplitude`, `hostname`, `meas_id`, and `file_name`.
 - `client/run_uncalibrated.py`: per SYNC cycle, performs pilot RX only (no loopback, no TX/BF runtime path). During pilot mode, both RX channels (0 and 1) use `TX/RX` antennas. It saves `<file_name>_iq.npz` with `pilot_iq`, `hostname`, `meas_id`, and `file_name`.
 
+</details>
+
 ## Measurement Procedure
 
 ### Spatial Sampling
 
 Measurements are performed on a three-dimensional grid with discrete intervals in x, y, and z. The speaker and UE antenna move jointly across the predefined XYZ grid. Each grid point contains synchronized acoustic and RF measurements and an absolute 3D ground-truth position from Qualisys.
+
+### Schematic Flow (ASCII)
+
+```text
+Per cycle (cycle_id = k, experiment_id = EXP):
+
+  zmq_orchestrator
+      |
+      |-- MOVE -----------------------> rover client
+      |<------------------------- MOVE_DONE
+      |
+      |-- START_MEAS -----------------> acoustic client
+      |<------------------------- MEAS_DONE
+      |
+      |-- START_MEAS -----------------> RF-orchestrator client
+                                      |
+                                      |-- wait ALIVE x N on alive_port
+                                      |-- publish SYNC "<cycle_id> <experiment_id>" on sync_port
+                                      |-- wait DONE  x N on done_port
+                                      |-- append server/record/data/exp-<experiment_id>.yml
+      |<------------------------- MEAS_DONE
+```
 
 ### RF Synchronization Protocol
 
