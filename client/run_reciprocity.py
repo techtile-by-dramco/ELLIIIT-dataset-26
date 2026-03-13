@@ -146,7 +146,9 @@ console.setFormatter(ColoredFormatter(fmt=formatter._fmt))
 
 
 # Also log to file in the script directory
-file_handler = logging.FileHandler(os.path.join(os.path.dirname(__file__), "log.txt"))
+file_handler = logging.FileHandler(
+    os.path.join(os.path.dirname(__file__), "log.txt"), mode="w"
+)
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 

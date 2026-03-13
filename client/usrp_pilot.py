@@ -100,6 +100,13 @@ formatter = LogFormatter(
 
 console.setFormatter(formatter)
 
+# Also log to file in the script directory and overwrite each run
+file_handler = logging.FileHandler(
+    os.path.join(os.path.dirname(__file__), "log.txt"), mode="w"
+)
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+
 
 with open(os.path.join(os.path.dirname(__file__), "cal-settings.yml"), "r") as file:
     logger.debug("Loading all default conf values...")
