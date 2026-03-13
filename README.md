@@ -172,10 +172,10 @@ For orchestrated runs, RF synchronization is handled inside `server/record/RF-or
 Per `START_MEAS`, exactly one RF cycle is executed:
 
 1. Wait for `rf_sync.num_subscribers` ALIVE/ready messages on `rf_sync.alive_port` (default `5558`).
-2. Publish one SYNC message on `rf_sync.sync_port` (default `5557`) with payload `<meas_id> <unique_id>`.
+2. Publish one SYNC message on `rf_sync.sync_port` (default `5557`) with payload `<cycle_id> <experiment_id>`.
 3. Wait for `rf_sync.num_subscribers` DONE messages on `rf_sync.done_port` (default `5559`).
 
-`<unique_id>` is the same value as the orchestrator `experiment_id` (not a locally generated timestamp). This same ID is used in RF logging output `server/record/data/exp-<experiment_id>.yml`.
+`experiment_id` is taken directly from the orchestrator (not locally generated) and is reused in RF logging output `server/record/data/exp-<experiment_id>.yml`.
 
 ## Artificial Path and Trajectory Construction
 

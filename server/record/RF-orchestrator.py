@@ -11,7 +11,7 @@ Protocol with zmq_orchestrator.py:
 
 Per START_MEAS this client runs one RF sync cycle:
   1) Wait for ALIVE quorum from RF tiles (REP).
-  2) Publish SYNC with "<meas_id> <unique_id>" (PUB).
+  2) Publish SYNC with "<cycle_id> <experiment_id>" (PUB).
   3) Wait for DONE quorum from RF tiles (REP).
 """
 
@@ -42,7 +42,7 @@ class RFSyncConfig:
 @dataclass
 class RFSyncRuntime:
     config: RFSyncConfig
-    unique_id: Optional[str]
+    experiment_id: Optional[str]
     sync_socket: zmq.Socket
     alive_socket: zmq.Socket
     done_socket: zmq.Socket
@@ -124,7 +124,7 @@ def init_rf_sync_runtime(ctx: zmq.Context, config: RFSyncConfig) -> RFSyncRuntim
 
     return RFSyncRuntime(
         config=config,
-        unique_id=None,
+        experiment_id=None,
         sync_socket=sync_socket,
         alive_socket=alive_socket,
         done_socket=done_socket,
@@ -146,10 +146,10 @@ def close_rf_sync_runtime(runtime: RFSyncRuntime) -> None:
 def _ensure_experiment_context(runtime: RFSyncRuntime, experiment_id: Any) -> str:
     exp_id = str(experiment_id) if experiment_id is not None else ""
     if not exp_id:
-        raise RuntimeError("Missing experiment_id in START_MEAS; cannot derive unique_id.")
+        raise RuntimeError("Missing experiment_id in START_MEAS.")
 
-    if runtime.unique_id is None:
-        runtime.unique_id = exp_id
+    if runtime.experiment_id is None:
+        runtime.experiment_id = exp_id
         output_dir = Path(__file__).resolve().parent / "data"
         output_dir.mkdir(parents=True, exist_ok=True)
         runtime.log_path = output_dir / f"exp-{exp_id}.yml"
@@ -159,12 +159,12 @@ def _ensure_experiment_context(runtime: RFSyncRuntime, experiment_id: Any) -> st
         runtime.log_file.write("measurements:\n")
         runtime.log_file.flush()
         print(f"[rf-sync] logging to {runtime.log_path}")
-    elif runtime.unique_id != exp_id:
+    elif runtime.experiment_id != exp_id:
         raise RuntimeError(
-            f"experiment_id changed from '{runtime.unique_id}' to '{exp_id}' in one process."
+            f"experiment_id changed from '{runtime.experiment_id}' to '{exp_id}' in one process."
         )
 
-    return runtime.unique_id
+    return runtime.experiment_id
 
 
 def _wait_for_quorum(
@@ -226,7 +226,7 @@ def run_rf_measurement(
 ) -> Dict[str, Any]:
     expected = runtime.config.num_subscribers
     timeout_s = runtime.config.wait_timeout_s
-    unique_id = _ensure_experiment_context(runtime, experiment_id)
+    sync_experiment_id = _ensure_experiment_context(runtime, experiment_id)
 
     print(f"[rf-sync][exp {experiment_id}][meas {meas_id}] waiting for ALIVE quorum...")
     alive_messages = _wait_for_quorum(
@@ -237,7 +237,7 @@ def run_rf_measurement(
         phase="ALIVE",
     )
 
-    sync_payload = f"{meas_id} {unique_id}"
+    sync_payload = f"{cycle_id} {sync_experiment_id}"
     runtime.sync_socket.send_string(sync_payload)
     print(f"[rf-sync][exp {experiment_id}][meas {meas_id}] SYNC {sync_payload}")
 
@@ -254,7 +254,7 @@ def run_rf_measurement(
     _append_measurement_log(runtime, experiment_id, cycle_id, meas_id, active_tiles)
 
     return {
-        "unique_id": unique_id,
+        "experiment_id": sync_experiment_id,
         "alive_count": len(alive_messages),
         "done_count": len(done_messages),
         "active_tiles": active_tiles,
