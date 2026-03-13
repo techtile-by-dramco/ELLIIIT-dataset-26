@@ -8,7 +8,7 @@ import zmq
 import time
 import sys
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 from helper import *
 
 # =============================================================================
@@ -59,7 +59,7 @@ alive_socket.bind("tcp://{}:{}".format(host, alive_port))
 meas_id = 0
 
 # Unique ID for the experiment based on current UTC timestamp
-unique_id = str(datetime.utcnow().strftime("%Y%m%d%H%M%S"))
+unique_id = str(datetime.now(UTC).strftime("%Y%m%d%H%M%S"))
 
 # Directory where this script is located
 # script_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)))
@@ -74,10 +74,11 @@ new_msg_received = 0
 print(f"Starting experiment: {unique_id}")
 
 # Path to save the experiment data as a YAML file
-current_file_path = os.path.abspath(__file__) 
+current_file_path = os.path.abspath(__file__)
 current_dir = os.path.dirname(current_file_path)
-parent_path = os.path.dirname(current_dir)
-output_path = os.path.join(parent_path, f"record/data/exp-{unique_id}.yml")
+output_dir = os.path.join(current_dir, "data")
+os.makedirs(output_dir, exist_ok=True)
+output_path = os.path.join(output_dir, f"exp-{unique_id}.yml")
 
 with open(output_path, "w") as f:
     # Write experiment metadata to the YAML file
