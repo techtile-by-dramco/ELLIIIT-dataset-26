@@ -34,7 +34,7 @@ CAPTURE_TIME: !!float 5
 # Duration for capturing data in seconds.
 
 # SERVER_IP: "192.168.10.54" 
-SERVER_IP: "192.108.2.57"  # TECHTILE JARNE SERVER
+SERVER_IP: "192.108.2.112"  # TECHTILE JARNE SERVER
 # SERVER_IP: "192.108.10.38"  # Client 9 Gilles
 # IP address of the server to connect to.
 
