@@ -11,6 +11,14 @@ server:
   sync_port: 5679
 heartbeat_interval: 10
 
+rf_sync:
+  num_subscribers: 42
+  host: "*"
+  sync_port: "5557"
+  alive_port: "5558"
+  done_port: "5559"
+  wait_timeout_s: 600.0
+
 # Tile settings
 # tiles: "E06 E07 F05 D05"                    # group name, single tile, or space-separated list
 tiles: "ceiling wallEast wallWest T01"

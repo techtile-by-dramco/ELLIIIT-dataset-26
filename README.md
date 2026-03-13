@@ -28,6 +28,7 @@ cd ..
 - Set server host/IP
 - Select tile group(s)
 - Configure RF parameters
+- Configure RF sync settings under `rf_sync` (`num_subscribers`, `host`, `sync_port`, `alive_port`, `done_port`, `wait_timeout_s`)
 - Set `client_script_name` and `client_script_args`
 - Set `extra_packages` (apt packages to install on tiles)
 
@@ -166,14 +167,15 @@ Measurements are performed on a three-dimensional grid with discrete intervals i
 
 ### RF Synchronization Protocol
 
-`server/record/sync-server.py` currently drives the RF run loop in two phases:
+For orchestrated runs, RF synchronization is handled inside `server/record/RF-orchestrator.py` during each `START_MEAS` command from `server/zmq_orchestrator.py`.
 
-1. Wait for all clients to send an ALIVE/ready message on port `5558`.
-2. Publish one SYNC message on port `5557` with `<meas_id> <unique_id>`.
-3. Wait for all clients to send a post-capture DONE message, also on port `5558`.
-4. Sleep for the configured interval and repeat.
+Per `START_MEAS`, exactly one RF cycle is executed:
 
-Note: In this flow, the legacy server `data-port` (`5559`) is not used.
+1. Wait for `rf_sync.num_subscribers` ALIVE/ready messages on `rf_sync.alive_port` (default `5558`).
+2. Publish one SYNC message on `rf_sync.sync_port` (default `5557`) with payload `<meas_id> <unique_id>`.
+3. Wait for `rf_sync.num_subscribers` DONE messages on `rf_sync.done_port` (default `5559`).
+
+`<unique_id>` is the same value as the orchestrator `experiment_id` (not a locally generated timestamp). This same ID is used in RF logging output `server/record/data/exp-<experiment_id>.yml`.
 
 ## Artificial Path and Trajectory Construction
 
