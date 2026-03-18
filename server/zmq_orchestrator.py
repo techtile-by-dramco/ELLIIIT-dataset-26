@@ -3,8 +3,8 @@
 zmq_orchestrator.py
 
 ZMQ orchestrator (ROUTER server).
-All configuration is read from server_config.json — which contains only
-server-side concerns (experiment identity, cycle count, timeouts, bind address).
+The control loop is configured via server_config.json. Optional rover position
+logging is loaded from experiment-settings.yaml.
 
 Clients (rover, acoustic) are fully self-configured via their own local configs.
 Messages carry only coordination identifiers; no parameters are forwarded.
@@ -12,6 +12,7 @@ Messages carry only coordination identifiers; no parameters are forwarded.
 Cycle:
   server   -> MOVE       (rover)    {experiment_id, cycle_id, meas_id, ts}
   rover    -> MOVE_DONE             {experiment_id, cycle_id, meas_id}
+  server   -> capture position sample and append exp-<id>-positions.csv
   server   -> START_MEAS (acoustic) {experiment_id, cycle_id, meas_id, ts}
   acoustic -> MEAS_DONE             {experiment_id, cycle_id, meas_id}
   repeat
@@ -45,13 +46,16 @@ server_config.json layout:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import signal
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Set, Tuple
+from typing import Any, Dict, Optional, Set, TextIO, Tuple
 
+import yaml
 import zmq
 
 
@@ -68,6 +72,22 @@ def jload(b: bytes) -> Dict[str, Any]:
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "server_config.json"
+DEFAULT_EXPERIMENT_SETTINGS_PATH = Path(__file__).resolve().parents[1] / "experiment-settings.yaml"
+POSITION_LOG_DIR = Path(__file__).resolve().parent / "record" / "data"
+POSITION_LOG_FIELDS = [
+    "experiment_id",
+    "cycle_id",
+    "meas_id",
+    "move_status",
+    "position_status",
+    "captured_at_utc",
+    "position_t",
+    "x",
+    "y",
+    "z",
+    "rotation_matrix_json",
+    "error",
+]
 
 
 def load_server_config(path: Path) -> Dict[str, Any]:
@@ -100,7 +120,139 @@ class Timeouts:
         )
 
 
-def server_main(config_path: Path) -> None:
+@dataclass
+class PositioningRuntime:
+    enabled: bool
+    positioner: Any = None
+    log_file: Optional[TextIO] = None
+    log_writer: Optional[csv.DictWriter] = None
+    log_path: Optional[Path] = None
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def load_experiment_settings(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"Experiment settings not found: {path}")
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def init_positioning_runtime(
+    experiment_settings_path: Path,
+    experiment_id: str,
+) -> PositioningRuntime:
+    settings = load_experiment_settings(experiment_settings_path)
+    positioning = settings.get("positioning")
+    if not isinstance(positioning, dict):
+        raise ValueError(
+            "Missing 'positioning' block in experiment settings. "
+            "Position logging is required by the orchestrator."
+        )
+
+    try:
+        from Positioner import PositionerClient
+    except ImportError as exc:
+        raise RuntimeError(
+            "Positioning is enabled, but PositionerClient is unavailable. "
+            "Install the 'positioner' package used by server/record/show_positions.py."
+        ) from exc
+
+    backend = str(positioning.get("protocol", "zmq")).lower()
+    positioner = PositionerClient(config=positioning, backend=backend)
+    positioner.start()
+
+    POSITION_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = POSITION_LOG_DIR / f"exp-{experiment_id}-positions.csv"
+    log_file = open(log_path, "w", encoding="utf-8", newline="")
+    log_writer = csv.DictWriter(log_file, fieldnames=POSITION_LOG_FIELDS)
+    log_writer.writeheader()
+    log_file.flush()
+
+    print(
+        "[server][positioning] started "
+        f"(backend={backend}, wanted_body={positioning.get('wanted_body')})"
+    )
+    print(f"[server][positioning] logging to {log_path}")
+
+    return PositioningRuntime(
+        enabled=True,
+        positioner=positioner,
+        log_file=log_file,
+        log_writer=log_writer,
+        log_path=log_path,
+    )
+
+
+def close_positioning_runtime(runtime: PositioningRuntime) -> None:
+    if runtime.positioner is not None:
+        try:
+            runtime.positioner.stop()
+        except Exception as exc:
+            print(f"[server][positioning] stop error: {exc}")
+
+    if runtime.log_file is not None:
+        runtime.log_file.close()
+
+
+def capture_and_log_position(
+    runtime: PositioningRuntime,
+    *,
+    experiment_id: str,
+    cycle_id: int,
+    meas_id: int,
+    move_status: str,
+) -> None:
+    if not runtime.enabled or runtime.log_writer is None or runtime.log_file is None:
+        return
+
+    row: Dict[str, Any] = {
+        "experiment_id": experiment_id,
+        "cycle_id": cycle_id,
+        "meas_id": meas_id,
+        "move_status": move_status,
+        "position_status": "no_data",
+        "captured_at_utc": utc_now_iso(),
+        "position_t": "",
+        "x": "",
+        "y": "",
+        "z": "",
+        "rotation_matrix_json": "",
+        "error": "",
+    }
+
+    try:
+        position = runtime.positioner.get_data()
+        if position is None:
+            row["error"] = "Positioner returned no data."
+        else:
+            row["position_status"] = "ok"
+            row["position_t"] = getattr(position, "t", "")
+            row["x"] = getattr(position, "x", "")
+            row["y"] = getattr(position, "y", "")
+            row["z"] = getattr(position, "z", "")
+            row["rotation_matrix_json"] = json.dumps(
+                getattr(position, "rotation_matrix", None),
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+    except Exception as exc:
+        row["position_status"] = "error"
+        row["error"] = str(exc)
+
+    runtime.log_writer.writerow(row)
+    runtime.log_file.flush()
+
+    print(
+        f"[server][exp {experiment_id}][meas {meas_id}] "
+        f"position capture status={row['position_status']} "
+        f"x={row['x']} y={row['y']} z={row['z']}"
+    )
+
+
+def server_main(config_path: Path, experiment_settings_path: Path) -> None:
     cfg = load_server_config(config_path)
     print(f"[server] loaded config from {config_path}")
 
@@ -121,6 +273,7 @@ def server_main(config_path: Path) -> None:
     alive: Set[str] = set()
     needed = {"rover", "acoustic", "rf"}
     stop   = {"flag": False}
+    positioning_runtime = PositioningRuntime(enabled=False)
 
     def _sigint(_sig, _frame):
         stop["flag"] = True
@@ -164,170 +317,187 @@ def server_main(config_path: Path) -> None:
     cycle_id = 0
     meas_id  = meas_start - 1
 
-    while not stop["flag"]:
-        cycle_id += 1
-        if cycles > 0 and cycle_id > cycles:
-            break
+    try:
+        positioning_runtime = init_positioning_runtime(
+            experiment_settings_path,
+            experiment_id,
+        )
 
-        meas_id += 1
+        while not stop["flag"]:
+            cycle_id += 1
+            if cycles > 0 and cycle_id > cycles:
+                break
 
-        # ------------------------------------------------------------------ MOVE
-        move_msg: Dict[str, Any] = {
-            "type":          "MOVE",
-            "experiment_id": experiment_id,
-            "cycle_id":      cycle_id,
-            "meas_id":       meas_id,
-            "ts":            now_ms(),
-        }
-        print(f"[server][exp {experiment_id}][meas {meas_id}] -> rover MOVE")
-        send_to("rover", move_msg)
+            meas_id += 1
 
-        got_move_done = False
-        deadline = time.time() + timeouts.mov_s
-        while not stop["flag"] and time.time() < deadline and not got_move_done:
-            got = recv_one(timeout_ms=timeouts.poll_ms)
-            if got is None:
-                continue
-            cid, msg = got
-            mtype     = msg.get("type")
-            mid_exp   = msg.get("experiment_id")
-            mid_meas  = msg.get("meas_id")
-            mid_cycle = msg.get("cycle_id")
+            # ------------------------------------------------------------------ MOVE
+            move_msg: Dict[str, Any] = {
+                "type":          "MOVE",
+                "experiment_id": experiment_id,
+                "cycle_id":      cycle_id,
+                "meas_id":       meas_id,
+                "ts":            now_ms(),
+            }
+            print(f"[server][exp {experiment_id}][meas {meas_id}] -> rover MOVE")
+            send_to("rover", move_msg)
 
-            if (
-                cid == "rover"
-                and mtype == "MOVE_DONE"
-                and mid_exp   == experiment_id
-                and mid_meas  == meas_id
-                and mid_cycle == cycle_id
-            ):
-                got_move_done = True
-                status = msg.get("status", "ok")
-                print(f"[server][exp {experiment_id}][meas {meas_id}] <- rover MOVE_DONE  status={status}")
-                if status == "error":
-                    print(f"[server][exp {experiment_id}][meas {meas_id}] rover error: {msg.get('error')}")
-            elif mtype == "ERROR" and mid_exp == experiment_id and mid_meas == meas_id:
-                print(f"[server][exp {experiment_id}][meas {meas_id}] <- {cid} ERROR: {msg.get('error')}")
-            elif mtype == "HELLO":
-                alive.add(cid)
-            else:
-                print(
-                    f"[server][exp {experiment_id}][meas {meas_id}] "
-                    f"(ignored) <- {cid} {mtype} exp={mid_exp} meas={mid_meas}"
-                )
+            got_move_done = False
+            move_status = "unknown"
+            deadline = time.time() + timeouts.mov_s
+            while not stop["flag"] and time.time() < deadline and not got_move_done:
+                got = recv_one(timeout_ms=timeouts.poll_ms)
+                if got is None:
+                    continue
+                cid, msg = got
+                mtype     = msg.get("type")
+                mid_exp   = msg.get("experiment_id")
+                mid_meas  = msg.get("meas_id")
+                mid_cycle = msg.get("cycle_id")
 
-        if not got_move_done:
-            print(f"[server][exp {experiment_id}][meas {meas_id}] TIMEOUT waiting MOVE_DONE — aborting")
-            break
+                if (
+                    cid == "rover"
+                    and mtype == "MOVE_DONE"
+                    and mid_exp   == experiment_id
+                    and mid_meas  == meas_id
+                    and mid_cycle == cycle_id
+                ):
+                    got_move_done = True
+                    move_status = str(msg.get("status", "ok"))
+                    print(f"[server][exp {experiment_id}][meas {meas_id}] <- rover MOVE_DONE  status={move_status}")
+                    if move_status == "error":
+                        print(f"[server][exp {experiment_id}][meas {meas_id}] rover error: {msg.get('error')}")
+                elif mtype == "ERROR" and mid_exp == experiment_id and mid_meas == meas_id:
+                    print(f"[server][exp {experiment_id}][meas {meas_id}] <- {cid} ERROR: {msg.get('error')}")
+                elif mtype == "HELLO":
+                    alive.add(cid)
+                else:
+                    print(
+                        f"[server][exp {experiment_id}][meas {meas_id}] "
+                        f"(ignored) <- {cid} {mtype} exp={mid_exp} meas={mid_meas}"
+                    )
 
-        # ------------------------------------------------------------ START_MEAS
-        start_meas_msg: Dict[str, Any] = {
-            "type":          "START_MEAS",
-            "experiment_id": experiment_id,
-            "cycle_id":      cycle_id,
-            "meas_id":       meas_id,
-            "ts":            now_ms(),
-        }
-        print(f"[server][exp {experiment_id}][meas {meas_id}] -> acoustic START_MEAS")
-        send_to("acoustic", start_meas_msg)
+            if not got_move_done:
+                print(f"[server][exp {experiment_id}][meas {meas_id}] TIMEOUT waiting MOVE_DONE — aborting")
+                break
 
-        got_meas_done = False
-        deadline = time.time() + timeouts.meas_s
-        while not stop["flag"] and time.time() < deadline and not got_meas_done:
-            got = recv_one(timeout_ms=timeouts.poll_ms)
-            if got is None:
-                continue
-            cid, msg = got
-            mtype     = msg.get("type")
-            mid_exp   = msg.get("experiment_id")
-            mid_meas  = msg.get("meas_id")
-            mid_cycle = msg.get("cycle_id")
+            capture_and_log_position(
+                positioning_runtime,
+                experiment_id=experiment_id,
+                cycle_id=cycle_id,
+                meas_id=meas_id,
+                move_status=move_status,
+            )
 
-            if (
-                cid == "acoustic"
-                and mtype == "MEAS_DONE"
-                and mid_exp   == experiment_id
-                and mid_meas  == meas_id
-                and mid_cycle == cycle_id
-            ):
-                got_meas_done = True
-                status = msg.get("status", "ok")
-                print(f"[server][exp {experiment_id}][meas {meas_id}] <- acoustic MEAS_DONE  status={status}")
-                if status == "error":
-                    print(f"[server][exp {experiment_id}][meas {meas_id}] acoustic error: {msg.get('error')}")
-            elif mtype == "ERROR" and mid_exp == experiment_id and mid_meas == meas_id:
-                print(f"[server][exp {experiment_id}][meas {meas_id}] <- {cid} ERROR: {msg.get('error')}")
-            elif mtype == "HELLO":
-                alive.add(cid)
-            else:
-                print(
-                    f"[server][exp {experiment_id}][meas {meas_id}] "
-                    f"(ignored) <- {cid} {mtype} exp={mid_exp} meas={mid_meas}"
-                )
+            # ------------------------------------------------------------ START_MEAS
+            start_meas_msg: Dict[str, Any] = {
+                "type":          "START_MEAS",
+                "experiment_id": experiment_id,
+                "cycle_id":      cycle_id,
+                "meas_id":       meas_id,
+                "ts":            now_ms(),
+            }
+            print(f"[server][exp {experiment_id}][meas {meas_id}] -> acoustic START_MEAS")
+            send_to("acoustic", start_meas_msg)
 
-        if not got_meas_done:
-            print(f"[server][exp {experiment_id}][meas {meas_id}] TIMEOUT waiting MEAS_DONE — aborting")
-            break
+            got_meas_done = False
+            deadline = time.time() + timeouts.meas_s
+            while not stop["flag"] and time.time() < deadline and not got_meas_done:
+                got = recv_one(timeout_ms=timeouts.poll_ms)
+                if got is None:
+                    continue
+                cid, msg = got
+                mtype     = msg.get("type")
+                mid_exp   = msg.get("experiment_id")
+                mid_meas  = msg.get("meas_id")
+                mid_cycle = msg.get("cycle_id")
 
-        # -------------------------------------------------------------- RF MEAS
-        start_rf_msg: Dict[str, Any] = {
-            "type":          "START_MEAS",
-            "experiment_id": experiment_id,
-            "cycle_id":      cycle_id,
-            "meas_id":       meas_id,
-            "ts":            now_ms(),
-        }
-        print(f"[server][exp {experiment_id}][meas {meas_id}] -> rf START_MEAS")
-        send_to("rf", start_rf_msg)
+                if (
+                    cid == "acoustic"
+                    and mtype == "MEAS_DONE"
+                    and mid_exp   == experiment_id
+                    and mid_meas  == meas_id
+                    and mid_cycle == cycle_id
+                ):
+                    got_meas_done = True
+                    status = msg.get("status", "ok")
+                    print(f"[server][exp {experiment_id}][meas {meas_id}] <- acoustic MEAS_DONE  status={status}")
+                    if status == "error":
+                        print(f"[server][exp {experiment_id}][meas {meas_id}] acoustic error: {msg.get('error')}")
+                elif mtype == "ERROR" and mid_exp == experiment_id and mid_meas == meas_id:
+                    print(f"[server][exp {experiment_id}][meas {meas_id}] <- {cid} ERROR: {msg.get('error')}")
+                elif mtype == "HELLO":
+                    alive.add(cid)
+                else:
+                    print(
+                        f"[server][exp {experiment_id}][meas {meas_id}] "
+                        f"(ignored) <- {cid} {mtype} exp={mid_exp} meas={mid_meas}"
+                    )
 
-        got_rf_done = False
-        deadline = time.time() + timeouts.meas_s
-        while not stop["flag"] and time.time() < deadline and not got_rf_done:
-            got = recv_one(timeout_ms=timeouts.poll_ms)
-            if got is None:
-                continue
-            cid, msg = got
-            mtype     = msg.get("type")
-            mid_exp   = msg.get("experiment_id")
-            mid_meas  = msg.get("meas_id")
-            mid_cycle = msg.get("cycle_id")
+            if not got_meas_done:
+                print(f"[server][exp {experiment_id}][meas {meas_id}] TIMEOUT waiting MEAS_DONE — aborting")
+                break
 
-            if (
-                cid == "rf"
-                and mtype == "MEAS_DONE"
-                and mid_exp   == experiment_id
-                and mid_meas  == meas_id
-                and mid_cycle == cycle_id
-            ):
-                got_rf_done = True
-                status = msg.get("status", "ok")
-                print(f"[server][exp {experiment_id}][meas {meas_id}] <- rf MEAS_DONE  status={status}")
-                if status == "error":
-                    print(f"[server][exp {experiment_id}][meas {meas_id}] rf error: {msg.get('error')}")
-            elif mtype == "ERROR" and mid_exp == experiment_id and mid_meas == meas_id:
-                print(f"[server][exp {experiment_id}][meas {meas_id}] <- {cid} ERROR: {msg.get('error')}")
-            elif mtype == "HELLO":
-                alive.add(cid)
-            else:
-                print(
-                    f"[server][exp {experiment_id}][meas {meas_id}] "
-                    f"(ignored) <- {cid} {mtype} exp={mid_exp} meas={mid_meas}"
-                )
+            # -------------------------------------------------------------- RF MEAS
+            start_rf_msg: Dict[str, Any] = {
+                "type":          "START_MEAS",
+                "experiment_id": experiment_id,
+                "cycle_id":      cycle_id,
+                "meas_id":       meas_id,
+                "ts":            now_ms(),
+            }
+            print(f"[server][exp {experiment_id}][meas {meas_id}] -> rf START_MEAS")
+            send_to("rf", start_rf_msg)
 
-        if not got_rf_done:
-            print(f"[server][exp {experiment_id}][meas {meas_id}] TIMEOUT waiting rf MEAS_DONE — aborting")
-            break
+            got_rf_done = False
+            deadline = time.time() + timeouts.meas_s
+            while not stop["flag"] and time.time() < deadline and not got_rf_done:
+                got = recv_one(timeout_ms=timeouts.poll_ms)
+                if got is None:
+                    continue
+                cid, msg = got
+                mtype     = msg.get("type")
+                mid_exp   = msg.get("experiment_id")
+                mid_meas  = msg.get("meas_id")
+                mid_cycle = msg.get("cycle_id")
 
-        print(f"[server][exp {experiment_id}][meas {meas_id}] cycle complete\n")
+                if (
+                    cid == "rf"
+                    and mtype == "MEAS_DONE"
+                    and mid_exp   == experiment_id
+                    and mid_meas  == meas_id
+                    and mid_cycle == cycle_id
+                ):
+                    got_rf_done = True
+                    status = msg.get("status", "ok")
+                    print(f"[server][exp {experiment_id}][meas {meas_id}] <- rf MEAS_DONE  status={status}")
+                    if status == "error":
+                        print(f"[server][exp {experiment_id}][meas {meas_id}] rf error: {msg.get('error')}")
+                elif mtype == "ERROR" and mid_exp == experiment_id and mid_meas == meas_id:
+                    print(f"[server][exp {experiment_id}][meas {meas_id}] <- {cid} ERROR: {msg.get('error')}")
+                elif mtype == "HELLO":
+                    alive.add(cid)
+                else:
+                    print(
+                        f"[server][exp {experiment_id}][meas {meas_id}] "
+                        f"(ignored) <- {cid} {mtype} exp={mid_exp} meas={mid_meas}"
+                    )
 
-    print("[server] shutting down")
-    sock.close()
-    ctx.term()
+            if not got_rf_done:
+                print(f"[server][exp {experiment_id}][meas {meas_id}] TIMEOUT waiting rf MEAS_DONE — aborting")
+                break
+
+            print(f"[server][exp {experiment_id}][meas {meas_id}] cycle complete\n")
+
+    finally:
+        print("[server] shutting down")
+        close_positioning_runtime(positioning_runtime)
+        sock.close()
+        ctx.term()
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="ZMQ orchestrator — reads server_config.json only"
+        description="ZMQ orchestrator with optional post-move position logging."
     )
     sub = p.add_subparsers(dest="mode", required=True)
 
@@ -336,12 +506,20 @@ def parse_args() -> argparse.Namespace:
         "--config", default=str(DEFAULT_CONFIG_PATH),
         help="Path to server_config.json  (default: ./server_config.json)",
     )
+    ps.add_argument(
+        "--experiment-settings",
+        default=str(DEFAULT_EXPERIMENT_SETTINGS_PATH),
+        help="Path to experiment-settings.yaml used for optional position logging.",
+    )
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    server_main(config_path=Path(args.config))
+    server_main(
+        config_path=Path(args.config),
+        experiment_settings_path=Path(args.experiment_settings),
+    )
 
 
 if __name__ == "__main__":

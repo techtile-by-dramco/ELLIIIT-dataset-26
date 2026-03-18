@@ -84,7 +84,7 @@ positioning:
   - z
   - utc
   - rm
-  enabled: false
+  enabled: true
   ip: 192.108.0.13
   port: 5556
   protocol: zmq
