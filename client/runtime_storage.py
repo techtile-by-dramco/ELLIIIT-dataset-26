@@ -25,6 +25,7 @@ def resolve_runtime_output_dir(config_file, hostname):
     base_output_dir = prepare_storage_base(
         storage_path=storage_path,
         settings_path=settings_path,
+        experiment_config=experiment_config,
     )
     host_output_dir = base_output_dir / hostname
     host_output_dir.mkdir(parents=True, exist_ok=True)
@@ -56,7 +57,7 @@ def load_settings(settings_path):
         ) from exc
 
 
-def prepare_storage_base(storage_path, settings_path):
+def prepare_storage_base(storage_path, settings_path, experiment_config=None):
     source, relative_parts = parse_storage_path(storage_path)
     if source is None:
         local_base = Path(storage_path).expanduser()
@@ -65,9 +66,20 @@ def prepare_storage_base(storage_path, settings_path):
         local_base.mkdir(parents=True, exist_ok=True)
         return local_base
 
-    mount_root = Path(os.getenv("SMB_MOUNT_ROOT", DEFAULT_MOUNT_ROOT)).expanduser()
+    mount_root = Path(
+        get_storage_setting(
+            experiment_config,
+            env_name="SMB_MOUNT_ROOT",
+            config_key="storage_mount_root",
+            default=DEFAULT_MOUNT_ROOT,
+        )
+    ).expanduser()
     mount_dir = mount_root / sanitize_mount_name(source)
-    ensure_cifs_mount(source, mount_dir)
+    ensure_cifs_mount(
+        source=source,
+        mount_dir=mount_dir,
+        mount_option_candidates=build_mount_option_candidates(experiment_config),
+    )
 
     storage_base = mount_dir.joinpath(*relative_parts)
     storage_base.mkdir(parents=True, exist_ok=True)
@@ -93,7 +105,7 @@ def sanitize_mount_name(source):
     return re.sub(r"[^A-Za-z0-9._-]+", "_", source.lstrip("/"))
 
 
-def ensure_cifs_mount(source, mount_dir):
+def ensure_cifs_mount(source, mount_dir, mount_option_candidates):
     mount_dir.mkdir(parents=True, exist_ok=True)
     mounted_source = get_mounted_source(mount_dir)
     if mounted_source:
@@ -104,77 +116,150 @@ def ensure_cifs_mount(source, mount_dir):
             f"expected {source}"
         )
 
-    mount_cmd = [
-        "mount",
-        "-t",
-        "cifs",
-        source,
-        str(mount_dir),
-        "-o",
-        build_mount_options(),
-    ]
-
     errors = []
-    for command in candidate_mount_commands(mount_cmd):
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode == 0:
-            if get_mounted_source(mount_dir) == source:
-                return
-            raise RuntimeError(
-                f"Mounted {source} on {mount_dir}, but verification failed."
+    for mount_options in mount_option_candidates:
+        mount_cmd = [
+            "mount",
+            "-t",
+            "cifs",
+            source,
+            str(mount_dir),
+            "-o",
+            mount_options,
+        ]
+        for command in candidate_mount_commands(mount_cmd):
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
             )
-        errors.append(format_mount_error(command, result))
+            if result.returncode == 0:
+                if get_mounted_source(mount_dir) == source:
+                    return
+                raise RuntimeError(
+                    f"Mounted {source} on {mount_dir}, but verification failed."
+                )
+            errors.append(format_mount_error(command, result))
 
     raise RuntimeError(
         f"Failed to mount SMB share {source} on {mount_dir}.\n"
         + "\n".join(errors)
+        + "\n"
+        + (
+            "If this is a guest share, try setting "
+            "experiment_config.storage_mount_options explicitly "
+            "(for example with sec=none or a different vers= value). "
+            "If auth is required after all, configure SMB_CREDENTIALS_FILE or "
+            "experiment_config.storage_credentials_file / "
+            "experiment_config.storage_username / "
+            "experiment_config.storage_password."
+        )
     )
 
 
 def candidate_mount_commands(mount_cmd):
-    commands = [mount_cmd]
-    if os.geteuid() != 0 and shutil.which("sudo"):
-        commands.append(["sudo", "-n", *mount_cmd])
-    return commands
+    if os.geteuid() == 0:
+        return [mount_cmd]
+    if shutil.which("sudo"):
+        return [["sudo", "-n", *mount_cmd]]
+    return [mount_cmd]
 
 
-def build_mount_options():
-    override = os.getenv("SMB_MOUNT_OPTIONS")
+def build_mount_option_candidates(experiment_config=None):
+    override = get_storage_setting(
+        experiment_config,
+        env_name="SMB_MOUNT_OPTIONS",
+        config_key="storage_mount_options",
+    )
     if override:
-        return override
+        return [override]
 
+    smb_version = get_storage_setting(
+        experiment_config,
+        env_name="SMB_VERSION",
+        config_key="storage_smb_version",
+        default="3.0",
+    )
     options = [
         "rw",
-        "vers=3.0",
         f"uid={os.getuid()}",
         f"gid={os.getgid()}",
         "file_mode=0664",
         "dir_mode=0775",
     ]
 
-    credentials_file = os.getenv("SMB_CREDENTIALS_FILE")
+    credentials_file = get_storage_setting(
+        experiment_config,
+        env_name="SMB_CREDENTIALS_FILE",
+        config_key="storage_credentials_file",
+    )
     if credentials_file:
-        options.append(f"credentials={credentials_file}")
-    else:
-        username = os.getenv("SMB_USERNAME")
-        password = os.getenv("SMB_PASSWORD")
-        domain = os.getenv("SMB_DOMAIN")
+        return [
+            ",".join(options + [f"vers={smb_version}", f"credentials={credentials_file}"])
+        ]
 
-        if username:
-            options.append(f"username={username}")
-            if password is not None:
-                options.append(f"password={password}")
-            if domain:
-                options.append(f"domain={domain}")
+    username = get_storage_setting(
+        experiment_config,
+        env_name="SMB_USERNAME",
+        config_key="storage_username",
+    )
+    password = get_storage_setting(
+        experiment_config,
+        env_name="SMB_PASSWORD",
+        config_key="storage_password",
+    )
+    domain = get_storage_setting(
+        experiment_config,
+        env_name="SMB_DOMAIN",
+        config_key="storage_domain",
+    )
+
+    if username:
+        auth_options = options + [f"vers={smb_version}", f"username={username}"]
+        if password is not None:
+            auth_options.append(f"password={password}")
         else:
-            options.append("guest")
+            auth_options.append("password=")
+        if domain:
+            auth_options.append(f"domain={domain}")
+        return [",".join(auth_options)]
 
-    return ",".join(options)
+    guest_variants = [
+        [f"vers={smb_version}", "guest"],
+        [f"vers={smb_version}", "guest", "sec=none"],
+        ["guest"],
+        ["guest", "sec=none"],
+        ["vers=2.1", "guest"],
+        ["vers=2.1", "guest", "sec=none"],
+        ["vers=2.0", "guest"],
+        ["vers=2.0", "guest", "sec=none"],
+        ["vers=1.0", "guest"],
+        ["vers=1.0", "guest", "sec=none"],
+    ]
+
+    candidates = []
+    seen = set()
+    for variant in guest_variants:
+        candidate = ",".join(options + variant)
+        if candidate not in seen:
+            seen.add(candidate)
+            candidates.append(candidate)
+
+    return candidates
+
+
+def get_storage_setting(experiment_config, env_name, config_key, default=None):
+    env_value = os.getenv(env_name)
+    if env_value not in (None, ""):
+        return env_value
+
+    if experiment_config:
+        config_value = experiment_config.get(config_key)
+        if config_value not in (None, ""):
+            return config_value
+
+    return default
 
 
 def get_mounted_source(mount_dir):
