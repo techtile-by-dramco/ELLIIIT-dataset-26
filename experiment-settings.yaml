@@ -57,7 +57,8 @@ experiment_config:
   # name: "phases"
   name: "reciprocity"
   storage_path: '\\10.128.48.9\ELLIIT'  # path on the tile where the data should be stored
-
+  storage_username: 'trpi'
+  storage_password: 'Trpitrpi229'
 
 scope:
   ip: "192.108.1.219"
