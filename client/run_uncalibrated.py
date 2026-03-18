@@ -7,11 +7,13 @@ import sys
 import threading
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import numpy as np
 import uhd
 import yaml
 import zmq
+import runtime_storage
 
 # =============================================================================
 #                           Experiment Configuration
@@ -27,8 +29,13 @@ exp_id = 0
 # =============================================================================
 
 context = zmq.Context()
-HOSTNAME = socket.gethostname()[4:]
+HOSTNAME_RAW = socket.gethostname()
+HOSTNAME = HOSTNAME_RAW[4:] if len(HOSTNAME_RAW) > 4 else HOSTNAME_RAW
 file_open = False
+RUNTIME_OUTPUT_DIR = None
+data_file = None
+data_file_path = None
+log_file_handler = None
 
 
 class LogFormatter(logging.Formatter):
@@ -90,13 +97,6 @@ formatter = LogFormatter(
 )
 console.setFormatter(ColoredFormatter(fmt=formatter._fmt))
 
-file_handler = logging.FileHandler(
-    os.path.join(os.path.dirname(__file__), "log.txt"), mode="w"
-)
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
-
-
 def setup_clock(usrp, clock_src, num_mboards):
     usrp.set_clock_source(clock_src)
     logger.debug("Now confirming lock on clock signals...")
@@ -117,6 +117,30 @@ def setup_pps(usrp, pps):
     logger.debug("Setting PPS")
     usrp.set_time_source(pps)
     return True
+
+
+def configure_file_logging(output_dir):
+    global RUNTIME_OUTPUT_DIR, log_file_handler
+
+    RUNTIME_OUTPUT_DIR = Path(output_dir)
+    RUNTIME_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    if log_file_handler is not None:
+        logger.removeHandler(log_file_handler)
+        log_file_handler.close()
+
+    log_file_handler = logging.FileHandler(
+        RUNTIME_OUTPUT_DIR / f"{Path(__file__).stem}.log",
+        mode="w",
+    )
+    log_file_handler.setFormatter(formatter)
+    logger.addHandler(log_file_handler)
+
+
+def build_output_path(file_name):
+    if RUNTIME_OUTPUT_DIR is None:
+        raise RuntimeError("Runtime output directory is not configured.")
+    return RUNTIME_OUTPUT_DIR / file_name
 
 
 def print_tune_result(tune_res):
@@ -151,7 +175,7 @@ def tune_usrp_rx_only(usrp, freq, channels, at_time):
 
 
 def wait_till_go_from_server(ip, _connect=True):
-    global meas_id, file_open, data_file, file_name
+    global meas_id, file_open, data_file, data_file_path, file_name
     logger.debug("Connecting to server %s.", ip)
     sync_socket = context.socket(zmq.SUB)
     alive_socket = context.socket(zmq.REQ)
@@ -170,8 +194,12 @@ def wait_till_go_from_server(ip, _connect=True):
     meas_id, unique_id = sync_socket.recv_string().split(" ")
     file_name = f"data_{HOSTNAME}_{unique_id}_{meas_id}"
 
-    if not file_open:
-        data_file = open(f"data_{HOSTNAME}_{unique_id}.txt", "a")
+    next_data_file_path = build_output_path(f"data_{HOSTNAME}_{unique_id}.txt")
+    if data_file is None or data_file_path != next_data_file_path:
+        if data_file is not None and not data_file.closed:
+            data_file.close()
+        data_file = open(next_data_file_path, "a", encoding="utf-8")
+        data_file_path = next_data_file_path
         file_open = True
 
     logger.debug(meas_id)
@@ -403,7 +431,6 @@ def parse_arguments():
     parser.add_argument("--config-file", type=str)
 
     args = parser.parse_args()
-    logger.info("Invocation args: %s", " ".join(sys.argv))
 
     if args.ip:
         logger.debug("Setting server IP to: %s", args.ip)
@@ -412,10 +439,26 @@ def parse_arguments():
 
 
 def main():
-    global meas_id
+    global meas_id, data_file
 
-    _ = parse_arguments()
+    args = parse_arguments()
     quit_event = None
+
+    try:
+        runtime_config = runtime_storage.resolve_runtime_output_dir(
+            args.config_file,
+            HOSTNAME,
+        )
+        configure_file_logging(runtime_config["host_output_dir"])
+        logger.info("Invocation args: %s", " ".join(sys.argv))
+        logger.info(
+            "Loaded experiment settings from %s",
+            runtime_config["settings_path"],
+        )
+        logger.info("Runtime output directory: %s", RUNTIME_OUTPUT_DIR)
+    except Exception as e:
+        logger.error("Unable to initialize runtime storage: %s", e)
+        return
 
     try:
         with open(os.path.join(os.path.dirname(__file__), "cal-settings.yml"), "r") as file:
@@ -488,7 +531,7 @@ def main():
                 send_usrp_done_mode(SERVER_IP)
                 continue
 
-            iq_file_name = f"{file_name}_iq.npz"
+            iq_file_name = build_output_path(f"{file_name}_iq.npz")
             np.savez(
                 iq_file_name,
                 pilot_iq=pilot_iq,
@@ -507,6 +550,8 @@ def main():
         if quit_event is not None:
             quit_event.set()
     finally:
+        if data_file is not None and not data_file.closed:
+            data_file.close()
         time.sleep(1)
         sys.exit(0)
 

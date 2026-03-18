@@ -56,6 +56,7 @@ experiment_config:
   # name: "random-phases"
   # name: "phases"
   name: "reciprocity"
+  storage_path: '\\10.128.48.9\ELLIIT'  # path on the tile where the data should be stored
 
 
 scope:
