@@ -3,7 +3,7 @@
 zmq_orchestrator.py
 
 ZMQ orchestrator (ROUTER server).
-The control loop is configured via server_config.json. Optional rover position
+The control loop is configured via serverConfig.yaml. Optional rover position
 logging is loaded from experiment-settings.yaml.
 
 Clients are self-configured on their own hosts. The outer control messages carry
@@ -26,7 +26,7 @@ Run 5 terminals:
 
 1) Server:
    python zmq_orchestrator.py server
-   python zmq_orchestrator.py server --config path/to/server_config.json
+   python zmq_orchestrator.py server --config path/to/serverConfig.yaml
 
 2) Rover client:
    python zmqclient_rover.py --connect tcp://127.0.0.1:5555
@@ -40,19 +40,16 @@ Run 5 terminals:
 5) Reference transmitter:
    python client/run-ref.py --config-file ../experiment-settings.yaml --freq 920e6 --rate 250e3 --duration 1E6 --channels 0 --wave-ampl 0.8 --gain 73 -w sine --wave-freq 0
 
-server_config.json layout:
-{
-    "experiment_id": "EXP001",
-    "bind":          "tcp://*:5555",
-    "cycles":        0,            // 0 = run forever
-    "meas_start":    1,
-    "timeouts": {
-        "ref_s":   5.0,
-        "mov_s":   30.0,
-        "meas_s":  60.0,
-        "poll_ms": 250
-    }
-}
+serverConfig.yaml layout:
+experiment_id: "EXP001"
+bind: "tcp://*:5555"
+cycles: 0          # 0 = run forever
+meas_start: 1
+timeouts:
+  ref_s: 5.0
+  mov_s: 30.0
+  meas_s: 60.0
+  poll_ms: 250
 """
 
 from __future__ import annotations
@@ -83,7 +80,7 @@ def jload(b: bytes) -> Dict[str, Any]:
     return json.loads(b.decode("utf-8"))
 
 
-DEFAULT_CONFIG_PATH = Path(__file__).parent / "server_config.json"
+DEFAULT_CONFIG_PATH = Path(__file__).parent / "serverConfig.yaml"
 DEFAULT_EXPERIMENT_SETTINGS_PATH = Path(__file__).resolve().parents[1] / "experiment-settings.yaml"
 POSITION_LOG_DIR = Path(__file__).resolve().parent / "record" / "data"
 POSITION_LOG_FIELDS = [
@@ -105,8 +102,8 @@ POSITION_LOG_FIELDS = [
 def load_server_config(path: Path) -> Dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Server config not found: {path}")
-    with open(path) as f:
-        cfg = json.load(f)
+    with open(path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
     _validate_server_config(cfg)
     return cfg
 
@@ -583,7 +580,7 @@ def parse_args() -> argparse.Namespace:
     ps = sub.add_parser("server")
     ps.add_argument(
         "--config", default=str(DEFAULT_CONFIG_PATH),
-        help="Path to server_config.json  (default: ./server_config.json)",
+        help="Path to serverConfig.yaml  (default: ./serverConfig.yaml)",
     )
     ps.add_argument(
         "--experiment-settings",

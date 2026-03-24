@@ -78,7 +78,7 @@ python server/update-experiment.py --ansible-output
 python server/run-clients.py --start
 
 # outer control plane
-python server/zmq_orchestrator.py server --config server/serverConfig.json --experiment-settings experiment-settings.yaml
+python server/zmq_orchestrator.py server --config server/serverConfig.yaml --experiment-settings experiment-settings.yaml
 python acoustic/ZMQclient_acoustic.py --connect tcp://SERVER:5555 --id acoustic
 python client/rover/ZMQclient_rover.py --connect tcp://SERVER:5555 --config client/rover/config.json
 python server/record/RF-orchestrator.py --connect tcp://SERVER:5555 --id rf --experiment-settings experiment-settings.yaml
@@ -92,7 +92,7 @@ Important distinctions:
 - `client/run_reciprocity.py`, `client/run_uncalibrated.py`, and `client/usrp_pilot.py` are not the `rf` client. They are RF tile workers started through `client_scripts`.
 - `client/run-ref.py` is a continuous support transmitter. It still does not wait for a per-measurement start command, but it now registers once with `server/zmq_orchestrator.py` as the mandatory `ref` readiness client.
 - `client/rover/simulate_roverMove.py` is a standalone test script. For orchestrated rover control, use `client/rover/ZMQclient_rover.py`.
-- `server/zmq_orchestrator.py` uses [`server/serverConfig.json`](/mnt/c/Users/Calle/OneDrive/Documenten/GitHub/ELLIIIT-dataset-26/server/serverConfig.json) for its ROUTER bind address and port. That is separate from the `server.messaging_port` and `server.sync_port` fields used by the older `server/run_server.py` path.
+- `server/zmq_orchestrator.py` uses [`server/serverConfig.yaml`](/mnt/c/Users/Calle/OneDrive/Documenten/GitHub/ELLIIIT-dataset-26/server/serverConfig.yaml) for its ROUTER bind address and port. That is separate from the `server.messaging_port` and `server.sync_port` fields used by the older `server/run_server.py` path.
 
 ## Joint Acoustic and RF Measurement Setup
 
