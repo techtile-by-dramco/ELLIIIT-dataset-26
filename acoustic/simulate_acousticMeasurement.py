@@ -52,7 +52,7 @@ def simulate_rir(room_dim, source_pos, mic_pos, sample_rate, max_order=3):
     return room.rir[0][0]
 
 
-def plot_random_RIRs_with_sim(mic_pos, csv_filename: Path, config_filename: Path, n: int = 6, seed: int = None):
+def plot_random_RIRs_with_sim(source_pos, csv_filename: Path, config_filename: Path, n: int = 6, seed: int = None):
     csv.field_size_limit(10 * 1024 * 1024)
 
     with open(config_filename, "r") as f:
@@ -134,8 +134,8 @@ def plot_random_RIRs_with_sim(mic_pos, csv_filename: Path, config_filename: Path
     print(f"Simulating {n} RIRs with pyroomacoustics …")
     for entry in selected:
         mic_pos    = list(entry["coords"])
-        entry["rir_sim"] = simulate_rir(room_dim, mic_pos, mic_pos, sample_rate)
-        print(f"  {entry['mic_id']} at {entry['coords']}  |  speaker at {mic_pos}")
+        entry["rir_sim"] = simulate_rir(room_dim, source_pos, mic_pos, sample_rate, 5)
+        print(f"  {entry['mic_id']} at {entry['coords']}")
 
     cols = 2
     rows = (n + 1) // cols
@@ -180,11 +180,10 @@ def plot_random_RIRs_with_sim(mic_pos, csv_filename: Path, config_filename: Path
 
 
 BASE_DIR    = Path(__file__).resolve().parent
-CSV_FILE    = BASE_DIR / "FILL_IN_THE_CSV_OF_THE_LAST_RECORDED_SIGNAL_IN_MAP_RESULTS.py"
-CONFIG_FILE = BASE_DIR.parent / "config.json"
+CSV_FILE    = BASE_DIR / "results/Measured_Signal_20260324_140041.csv"
+CONFIG_FILE = BASE_DIR / "config.json"
 
 def main():
-    example_speaker = [4.555, 2.645, 0.215]
     print("Running acoustic measurement...")
     run_acoustic_measurement()
     print("\n--- Measurement Complete ---")
@@ -192,8 +191,9 @@ def main():
 if __name__ == "__main__":
     main()
     plot_random_RIRs_with_sim(
+    source_pos= [1.33, 2.47, 0.46],
     csv_filename    = CSV_FILE,
     config_filename = CONFIG_FILE,
-    n               = 6,
-    seed            = 2,
+    n               = 10,
+    seed            = 4,
 )
