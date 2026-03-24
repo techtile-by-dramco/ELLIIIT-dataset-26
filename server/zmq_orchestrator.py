@@ -59,6 +59,7 @@ import csv
 import json
 import logging
 import signal
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -82,6 +83,16 @@ def jload(b: bytes) -> Dict[str, Any]:
 
 
 LOGGER = logging.getLogger("zmq_orchestrator")
+ANSI_RESET = "\033[0m"
+ENTITY_COLORS = {
+    "server": "\033[36m",
+    "ref": "\033[35m",
+    "rover": "\033[33m",
+    "acoustic": "\033[32m",
+    "rf": "\033[34m",
+    "positioning": "\033[96m",
+}
+USE_COLOR = sys.stderr.isatty()
 
 
 def setup_logging() -> None:
@@ -105,15 +116,26 @@ def _fmt_log_value(value: Any) -> str:
         return str(value)
     if isinstance(value, set):
         value = sorted(value)
-    if isinstance(value, (list, tuple, dict)):
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(_fmt_log_value(item) for item in value) + "]"
+    if isinstance(value, dict):
         return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
     if isinstance(value, str):
         if not value:
             return '""'
         if any(ch.isspace() for ch in value):
             return json.dumps(value, ensure_ascii=False)
-        return value
+        return _colorize_entity(value)
     return str(value)
+
+
+def _colorize_entity(value: str) -> str:
+    if not USE_COLOR:
+        return value
+    color = ENTITY_COLORS.get(value)
+    if color is None:
+        return value
+    return f"{color}{value}{ANSI_RESET}"
 
 
 def log_event(level: int, event: str, **fields: Any) -> None:
