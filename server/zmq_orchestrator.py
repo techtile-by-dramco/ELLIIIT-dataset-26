@@ -6,8 +6,8 @@ ZMQ orchestrator (ROUTER server).
 The control loop is configured via server_config.json. Optional rover position
 logging is loaded from experiment-settings.yaml.
 
-Clients (rover, acoustic) are fully self-configured via their own local configs.
-Messages carry only coordination identifiers; no parameters are forwarded.
+Clients are self-configured on their own hosts. The outer control messages carry
+only coordination identifiers; no measurement parameters are forwarded.
 
 Cycle:
   server   -> MOVE       (rover)    {experiment_id, cycle_id, meas_id, ts}
@@ -15,9 +15,11 @@ Cycle:
   server   -> capture position sample and append exp-<id>-positions.csv
   server   -> START_MEAS (acoustic) {experiment_id, cycle_id, meas_id, ts}
   acoustic -> MEAS_DONE             {experiment_id, cycle_id, meas_id}
+  server   -> START_MEAS (rf)       {experiment_id, cycle_id, meas_id, ts}
+  rf       -> MEAS_DONE             {experiment_id, cycle_id, meas_id}
   repeat
 
-Run 3 terminals:
+Run 4 terminals:
 
 1) Server:
    python zmq_orchestrator.py server
@@ -28,6 +30,9 @@ Run 3 terminals:
 
 3) Acoustic client:
    python zmqclient_acoustic.py --connect tcp://127.0.0.1:5555 --id acoustic
+
+4) RF orchestrator client:
+   python RF-orchestrator.py --connect tcp://127.0.0.1:5555 --id rf --experiment-settings ../experiment-settings.yaml
 
 server_config.json layout:
 {
@@ -296,7 +301,7 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
 
     print(f"[server] bound at {bind}")
     print(f"[server] experiment_id={experiment_id}  cycles={'∞' if cycles == 0 else cycles}  meas_start={meas_start}")
-    print("[server] waiting for HELLO from rover, acoustic (up to 15 s)…")
+    print("[server] waiting for HELLO from rover, acoustic, rf (up to 15 s)…")
 
     t0 = time.time()
     while not stop["flag"] and alive != needed and (time.time() - t0 < 15.0):

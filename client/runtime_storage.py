@@ -37,6 +37,33 @@ def resolve_runtime_output_dir(config_file, hostname):
     }
 
 
+def resolve_rf_sync_endpoint(config_file):
+    settings_path = resolve_settings_path(config_file)
+    settings = load_settings(settings_path)
+    server_settings = settings.get("server") or {}
+    rf_sync = settings.get("rf_sync") or {}
+
+    host = rf_sync.get("connect_host") or server_settings.get("host")
+    if not host:
+        bind_host = rf_sync.get("host")
+        if bind_host and bind_host not in {"*", "0.0.0.0", "::"}:
+            host = bind_host
+
+    if not host:
+        raise ValueError(
+            f"Missing RF sync connect host in {settings_path}. "
+            "Set server.host or rf_sync.connect_host."
+        )
+
+    return {
+        "settings_path": settings_path,
+        "host": str(host),
+        "sync_port": str(rf_sync.get("sync_port", "5557")),
+        "alive_port": str(rf_sync.get("alive_port", "5558")),
+        "done_port": str(rf_sync.get("done_port", "5559")),
+    }
+
+
 def resolve_settings_path(config_file):
     if config_file:
         return Path(config_file).expanduser().resolve()

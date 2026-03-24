@@ -1102,12 +1102,14 @@ def main():
 
     args = parse_arguments()
     quit_event = None
+    sync_config = None
 
     try:
         runtime_config = runtime_storage.resolve_runtime_output_dir(
             args.config_file,
             HOSTNAME,
         )
+        sync_config = runtime_storage.resolve_rf_sync_endpoint(args.config_file)
         configure_file_logging(runtime_config["host_output_dir"])
         logger.info("Invocation args: %s", " ".join(sys.argv))
         logger.info(
@@ -1137,6 +1139,23 @@ def main():
     except Exception as e:
         logger.error(f"Unexpected error while loading calibration settings: {e}")
         exit()
+
+    if sync_config is not None:
+        globals().update(
+            {
+                "SERVER_IP": sync_config["host"],
+                "SYNC_PORT": sync_config["sync_port"],
+                "ALIVE_PORT": sync_config["alive_port"],
+                "DONE_PORT": sync_config["done_port"],
+            }
+        )
+        logger.info(
+            "RF sync endpoint: %s (sync=%s alive=%s done=%s)",
+            SERVER_IP,
+            SYNC_PORT,
+            ALIVE_PORT,
+            DONE_PORT,
+        )
 
     try:
         # Get current path
@@ -1197,7 +1216,8 @@ def main():
                     "Pilot capture failed, skipping IQ save for this run. Reason: %s",
                     pilot_result["error"],
                 )
-                return
+                send_usrp_done_mode(SERVER_IP)
+                continue
 
             # Print pilot phase
             logger.info(
@@ -1225,7 +1245,8 @@ def main():
                     "Loopback capture failed, skipping IQ save for this run. Reason: %s",
                     loopback_result["error"],
                 )
-                return
+                send_usrp_done_mode(SERVER_IP)
+                continue
 
             # Print loopback phase
             logger.info(
@@ -1244,7 +1265,8 @@ def main():
                     pilot_iq.size,
                     loopback_iq.size,
                 )
-                return
+                send_usrp_done_mode(SERVER_IP)
+                continue
 
             iq_file_name = build_output_path(f"{file_name}_iq.npz")
             np.savez(

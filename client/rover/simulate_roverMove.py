@@ -1,4 +1,4 @@
-from rover import run_rover, load_config
+from rover import run_rover
 import json
 from pathlib import Path
 

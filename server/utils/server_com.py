@@ -1,21 +1,40 @@
 import zmq
 import json
+import yaml
 import time
 import signal
 import threading
 from datetime import datetime, timedelta
 
-class Server:
-    def __init__(self, msg_port="5678", sync_port="5679", heartbeat_timeout=10, silent=False):
+class ServerSideCom:
+    def __init__(self, settings_path="", silent=True):
+        if not settings_path:
+            raise ValueError(f"[{__class__}] 'settings_path' not specified")
+        
+        with open(settings_path, "r") as f:
+            settings = yaml.safe_load(f)
+        
+        if not settings:
+            raise Exception(f"Could not read settings from {settings_path}.")
+        
+        server_settings = settings.get("server", "")
+        if not server_settings:
+            raise Exception(f"Could not read server settings from {settings_path}.")
+        
+        # Heartbeat interval for client liveness detection
+        heartbeat_timeout = int(settings.get("heartbeat_interval", "")) + 5
+        messaging_port = server_settings.get("messaging_port", "")
+        sync_port = server_settings.get("sync_port", "")
+                
         self.context = zmq.Context()
         self.messaging = self.context.socket(zmq.ROUTER)
-        self.messaging.bind(f"tcp://*:{msg_port}")
+        self.messaging.bind(f"tcp://*:{messaging_port}")
         self.sync = self.context.socket(zmq.PUB)
         self.sync.bind(f"tcp://*:{sync_port}")
         self.clients = {}
         self.heartbeat_timeout = heartbeat_timeout
         self.silent = silent
-        self.running = True
+        self.running = False
         self.thread = None
         # Event handling
         self.callbacks = {}
@@ -25,6 +44,7 @@ class Server:
         if self.thread is not None:
             return  # already running
 
+        self.running = True
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
 
@@ -102,7 +122,8 @@ class Server:
                             except Exception as e:
                                 print(f"Callback error for {msg_type}: {e}")
                         else:
-                            print("unhandled message")
+                            if not self.silent:
+                                print(f"[{__class__}] unhandled message")
 
                 self._purge_dead()
 

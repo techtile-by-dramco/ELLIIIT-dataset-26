@@ -20,6 +20,7 @@ import zmq
 from scipy.stats import circmean, circvar
 from datetime import datetime, timedelta
 import socket
+import runtime_storage
 
 
 CMD_DELAY = 0.05  # set a 50mS delay in commands
@@ -1036,6 +1037,7 @@ def parse_arguments():
     parser.add_argument(
         "--ip", type=str, help="ip address of the server", required=False
     )
+    parser.add_argument("--config-file", type=str, required=False)
 
     # Parse the arguments
     args = parser.parse_args()
@@ -1047,6 +1049,8 @@ def parse_arguments():
         if args.ip:  # and not empty
             logger.debug("Setting server IP to: " + args.ip)
             SERVER_IP = args.ip
+
+    return args
 
 def send_usrp_done_mode(ip):
     done_port = str(globals().get("DONE_PORT", globals().get("DATA_PORT", "5559")))
@@ -1063,7 +1067,25 @@ def main():
     # start_PLL()
 
     # Parse arguments
-    parse_arguments()
+    args = parse_arguments()
+
+    if args.config_file:
+        sync_config = runtime_storage.resolve_rf_sync_endpoint(args.config_file)
+        globals().update(
+            {
+                "SERVER_IP": sync_config["host"],
+                "SYNC_PORT": sync_config["sync_port"],
+                "ALIVE_PORT": sync_config["alive_port"],
+                "DONE_PORT": sync_config["done_port"],
+            }
+        )
+        logger.info(
+            "RF sync endpoint: %s (sync=%s alive=%s done=%s)",
+            SERVER_IP,
+            SYNC_PORT,
+            ALIVE_PORT,
+            DONE_PORT,
+        )
 
     # Now tx_phase can be used globally
     print(f"The phase value is set to: {tx_phase}")

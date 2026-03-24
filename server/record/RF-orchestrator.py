@@ -11,8 +11,9 @@ Protocol with zmq_orchestrator.py:
 
 Per START_MEAS this client runs one RF sync cycle:
   1) Wait for ALIVE quorum from RF tiles (REP).
-  2) Publish SYNC with "<cycle_id> <experiment_id>" (PUB).
-  3) Wait for DONE quorum from RF tiles (REP).
+  2) Wait pre_sync_delay_s to let per-cycle SUB reconnects settle.
+  3) Publish SYNC with "<cycle_id> <experiment_id>" (PUB).
+  4) Wait for DONE quorum from RF tiles (REP).
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ class RFSyncConfig:
     sync_port: str = "5557"
     alive_port: str = "5558"
     done_port: str = "5559"
+    pre_sync_delay_s: float = 2.0
     wait_timeout_s: float = 600.0
 
 
@@ -75,7 +77,8 @@ def load_rf_sync_config(settings_path: Path) -> RFSyncConfig:
     if not isinstance(rf_sync, dict):
         raise ValueError(
             "Missing 'rf_sync' block in experiment settings. "
-            "Expected keys: num_subscribers, host, sync_port, alive_port, done_port, wait_timeout_s."
+            "Expected keys: num_subscribers, host, sync_port, alive_port, done_port, "
+            "pre_sync_delay_s, wait_timeout_s."
         )
 
     if "num_subscribers" not in rf_sync:
@@ -87,10 +90,13 @@ def load_rf_sync_config(settings_path: Path) -> RFSyncConfig:
         sync_port=str(rf_sync.get("sync_port", "5557")),
         alive_port=str(rf_sync.get("alive_port", "5558")),
         done_port=str(rf_sync.get("done_port", "5559")),
+        pre_sync_delay_s=float(rf_sync.get("pre_sync_delay_s", 2.0)),
         wait_timeout_s=float(rf_sync.get("wait_timeout_s", 600.0)),
     )
     if cfg.num_subscribers <= 0:
         raise ValueError("rf_sync.num_subscribers must be > 0")
+    if cfg.pre_sync_delay_s < 0:
+        raise ValueError("rf_sync.pre_sync_delay_s must be >= 0")
     if cfg.wait_timeout_s <= 0:
         raise ValueError("rf_sync.wait_timeout_s must be > 0")
 
@@ -119,6 +125,7 @@ def init_rf_sync_runtime(ctx: zmq.Context, config: RFSyncConfig) -> RFSyncRuntim
     print(
         "[rf-sync] bound sockets "
         f"(sync={config.sync_port}, alive={config.alive_port}, done={config.done_port}) "
+        f"pre_sync_delay={config.pre_sync_delay_s:.2f}s "
         f"for {config.num_subscribers} subscribers"
     )
 
@@ -236,6 +243,13 @@ def run_rf_measurement(
         timeout_s=timeout_s,
         phase="ALIVE",
     )
+
+    if runtime.config.pre_sync_delay_s > 0:
+        print(
+            f"[rf-sync][exp {experiment_id}][meas {meas_id}] "
+            f"waiting {runtime.config.pre_sync_delay_s:.2f}s before SYNC"
+        )
+        time.sleep(runtime.config.pre_sync_delay_s)
 
     sync_payload = f"{cycle_id} {sync_experiment_id}"
     runtime.sync_socket.send_string(sync_payload)

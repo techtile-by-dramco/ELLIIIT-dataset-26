@@ -65,6 +65,7 @@ print("Working on", len(host_list) ,"tile(s):", tiles)
 
 # First we test connectivity
 nr_active_tiles = 0
+all_failed_tiles = []
 if test_connectivity:
     print("Testing connectivity ... ")
     playbook_path = os.path.join(config.PLAYBOOK_DIR, "ping.yaml")
@@ -83,6 +84,7 @@ if test_connectivity:
     if not (nr_active_tiles == len(host_list)):
         print("Unable to connect to all tiles.")
         print("Inactive tiles:", failed_tiles)
+        all_failed_tiles.append(failed_tiles)
         if halt_on_connectivity_failure:
             print("Aborting (halt_on_connectivity_failure = True)")
             sys.exit(config.ERRORS["CONNECTIVITY_ERROR"])
@@ -109,9 +111,10 @@ if args.start:
         cleanup=True
     )
 
-    if not (nr_active_tiles == len(host_list)):
+    if not (nr_active_tiles == prev_nr_active_tiles):
         print("Unable to connect to all tiles.")
         print("Inactive tiles:", failed_tiles)
+        all_failed_tiles.append(failed_tiles)
         if halt_on_connectivity_failure:
             print("Aborting (halt_on_connectivity_failure = True)")
             sys.exit(config.ERRORS["CONNECTIVITY_ERROR"])
@@ -136,9 +139,10 @@ if args.stop:
         cleanup=True
     )
 
-    if not (nr_active_tiles == len(host_list)):
+    if not (nr_active_tiles == prev_nr_active_tiles):
         print("Unable to connect to all tiles.")
         print("Inactive tiles:", failed_tiles)
+        all_failed_tiles.append(failed_tiles)
         if halt_on_connectivity_failure:
             print("Aborting (halt_on_connectivity_failure = True)")
             sys.exit(config.ERRORS["CONNECTIVITY_ERROR"])
@@ -148,5 +152,10 @@ if args.stop:
     prev_nr_active_tiles = nr_active_tiles
 
     print("Experiment stopped on tiles(s):", tiles)
+
+failed_summary = " ".join(all_failed_tiles)
+if failed_summary:
+    print("Not all operations were succesful on every tile.")
+    print("Check tiles:", failed_summary)
 
 print("Done.")
