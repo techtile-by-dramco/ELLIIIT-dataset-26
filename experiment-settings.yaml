@@ -126,5 +126,5 @@ positioning:
   xaxisoffset: 0
   yaxisoffset: 0
   zaxisoffset: 0
-  wanted_body: "ep"
+  wanted_body: "ELLIIT"
   capture_time_per_pos: 0.2 # in seconds only for direct method
