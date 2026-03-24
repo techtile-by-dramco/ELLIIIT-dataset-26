@@ -57,6 +57,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 import signal
 import time
 from dataclasses import dataclass
@@ -78,6 +79,91 @@ def jdump(obj: Dict[str, Any]) -> bytes:
 
 def jload(b: bytes) -> Dict[str, Any]:
     return json.loads(b.decode("utf-8"))
+
+
+LOGGER = logging.getLogger("zmq_orchestrator")
+
+
+def setup_logging() -> None:
+    if LOGGER.handlers:
+        return
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter(
+            "[%(asctime)s] [%(levelname)s] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+    LOGGER.addHandler(handler)
+    LOGGER.setLevel(logging.INFO)
+    LOGGER.propagate = False
+
+
+def _fmt_log_value(value: Any) -> str:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, set):
+        value = sorted(value)
+    if isinstance(value, (list, tuple, dict)):
+        return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    if isinstance(value, str):
+        if not value:
+            return '""'
+        if any(ch.isspace() for ch in value):
+            return json.dumps(value, ensure_ascii=False)
+        return value
+    return str(value)
+
+
+def log_event(level: int, event: str, **fields: Any) -> None:
+    payload = " ".join(
+        f"{key}={_fmt_log_value(value)}"
+        for key, value in fields.items()
+        if value is not None
+    )
+    message = f"[{event}]"
+    if payload:
+        message = f"{message} {payload}"
+    LOGGER.log(level, message)
+
+
+def log_banner(title: str, **fields: Any) -> None:
+    payload = " ".join(
+        f"{key}={_fmt_log_value(value)}"
+        for key, value in fields.items()
+        if value is not None
+    )
+    suffix = f" {payload}" if payload else ""
+    LOGGER.info("========== %s%s ==========", title, suffix)
+
+
+def summarize_message(msg: Dict[str, Any]) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {}
+    field_map = {
+        "type": "msg_type",
+        "status": "status",
+        "id": "client_id",
+        "service": "service",
+        "ping_id": "ping_id",
+        "experiment_id": "experiment_id",
+        "cycle_id": "cycle_id",
+        "meas_id": "meas_id",
+        "ts": "ts",
+        "error": "error",
+    }
+    for src_key, dst_key in field_map.items():
+        if src_key in msg:
+            summary[dst_key] = msg.get(src_key)
+    return summary
+
+
+def log_send(target: str, msg: Dict[str, Any], **fields: Any) -> None:
+    log_event(logging.INFO, "send", target=target, **summarize_message(msg), **fields)
+
+
+def log_recv(source: str, msg: Dict[str, Any], **fields: Any) -> None:
+    log_event(logging.INFO, "recv", source=source, **summarize_message(msg), **fields)
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "serverConfig.yaml"
@@ -182,11 +268,13 @@ def init_positioning_runtime(
     log_writer.writeheader()
     log_file.flush()
 
-    print(
-        "[server][positioning] started "
-        f"(backend={backend}, wanted_body={positioning.get('wanted_body')})"
+    log_event(
+        logging.INFO,
+        "positioning.start",
+        backend=backend,
+        wanted_body=positioning.get("wanted_body"),
+        log_path=log_path,
     )
-    print(f"[server][positioning] logging to {log_path}")
 
     return PositioningRuntime(
         enabled=True,
@@ -202,7 +290,7 @@ def close_positioning_runtime(runtime: PositioningRuntime) -> None:
         try:
             runtime.positioner.stop()
         except Exception as exc:
-            print(f"[server][positioning] stop error: {exc}")
+            log_event(logging.WARNING, "positioning.stop_error", error=str(exc))
 
     if runtime.log_file is not None:
         runtime.log_file.close()
@@ -256,16 +344,25 @@ def capture_and_log_position(
     runtime.log_writer.writerow(row)
     runtime.log_file.flush()
 
-    print(
-        f"[server][exp {experiment_id}][meas {meas_id}] "
-        f"position capture status={row['position_status']} "
-        f"x={row['x']} y={row['y']} z={row['z']}"
+    log_event(
+        logging.INFO,
+        "positioning.capture",
+        experiment_id=experiment_id,
+        cycle_id=cycle_id,
+        meas_id=meas_id,
+        move_status=move_status,
+        position_status=row["position_status"],
+        x=row["x"],
+        y=row["y"],
+        z=row["z"],
+        error=row["error"] or None,
     )
 
 
 def server_main(config_path: Path, experiment_settings_path: Path) -> None:
+    setup_logging()
     cfg = load_server_config(config_path)
-    print(f"[server] loaded config from {config_path}")
+    log_event(logging.INFO, "config.loaded", config_path=config_path)
 
     experiment_id = cfg["experiment_id"]
     bind          = cfg.get("bind", "tcp://*:5555")
@@ -293,6 +390,7 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
 
     def send_to(client_id: str, msg: Dict[str, Any]) -> None:
         sock.send_multipart([client_id.encode("utf-8"), jdump(msg)])
+        log_send(client_id, msg)
 
     def recv_one(timeout_ms: int) -> Optional[Tuple[str, Dict[str, Any]]]:
         events = dict(poller.poll(timeout_ms))
@@ -319,7 +417,14 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                 "ts": now_ms(),
             },
         )
-        print(f"[server] -> {client_id} PING ({label})")
+        log_event(
+            logging.INFO,
+            "healthcheck.start",
+            client=client_id,
+            label=label,
+            timeout_s=timeout_s,
+            ping_id=ping_id,
+        )
 
         deadline = time.time() + timeout_s
         while not stop["flag"] and time.time() < deadline:
@@ -332,7 +437,7 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
             mid_ping = msg.get("ping_id")
 
             if cid == client_id and mtype == "PONG" and mid_ping == ping_id:
-                print(f"[server] <- {client_id} PONG ({label})")
+                log_recv(cid, msg, label=label, matched=True)
                 return
 
             if cid == client_id and mtype == "ERROR":
@@ -343,10 +448,15 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
 
             if mtype == "HELLO":
                 alive.add(cid)
-                print(f"[server] HELLO from '{cid}'  (alive={sorted(alive)})")
+                log_recv(cid, msg, alive=sorted(alive))
             else:
-                print(
-                    f"[server] (during {label}) ignored <- {cid} {mtype} ping_id={mid_ping}"
+                log_event(
+                    logging.WARNING,
+                    "recv.ignored",
+                    phase=label,
+                    source=cid,
+                    msg_type=mtype,
+                    ping_id=mid_ping,
                 )
 
         raise RuntimeError(
@@ -354,9 +464,19 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
         )
 
     try:
-        print(f"[server] bound at {bind}")
-        print(f"[server] experiment_id={experiment_id}  cycles={'∞' if cycles == 0 else cycles}  meas_start={meas_start}")
-        print("[server] waiting for HELLO from rover, acoustic, rf, ref (up to 15 s)…")
+        log_banner(
+            "server.start",
+            bind=bind,
+            experiment_id=experiment_id,
+            cycles="∞" if cycles == 0 else cycles,
+            meas_start=meas_start,
+        )
+        log_event(
+            logging.INFO,
+            "handshake.wait",
+            expected_clients=sorted(needed),
+            timeout_s=15.0,
+        )
 
         t0 = time.time()
         while not stop["flag"] and alive != needed and (time.time() - t0 < 15.0):
@@ -366,9 +486,14 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
             cid, msg = got
             if msg.get("type") == "HELLO":
                 alive.add(cid)
-                print(f"[server] HELLO from '{cid}'  (alive={sorted(alive)})")
+                log_recv(cid, msg, alive=sorted(alive))
             else:
-                print(f"[server] (pre-loop) got {msg.get('type')} from '{cid}'")
+                log_event(
+                    logging.WARNING,
+                    "handshake.unexpected",
+                    source=cid,
+                    msg_type=msg.get("type"),
+                )
 
         if "ref" not in alive:
             raise RuntimeError(
@@ -377,8 +502,14 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
             )
 
         if alive != needed:
-            print(f"[server] WARNING: missing non-mandatory clients: {sorted(needed - alive)}")
-            print("[server] continuing anyway; missing clients will cause timeouts.\n")
+            log_event(
+                logging.WARNING,
+                "handshake.partial",
+                connected=sorted(alive),
+                missing=sorted(needed - alive),
+            )
+        else:
+            log_event(logging.INFO, "handshake.complete", connected=sorted(alive))
     except Exception:
         sock.close()
         ctx.term()
@@ -399,6 +530,12 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                 break
 
             meas_id += 1
+            log_banner(
+                "cycle.start",
+                experiment_id=experiment_id,
+                cycle_id=cycle_id,
+                meas_id=meas_id,
+            )
 
             ensure_client_active(
                 "ref",
@@ -414,8 +551,17 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                 "meas_id":       meas_id,
                 "ts":            now_ms(),
             }
-            print(f"[server][exp {experiment_id}][meas {meas_id}] -> rover MOVE")
             send_to("rover", move_msg)
+            log_event(
+                logging.INFO,
+                "phase.start",
+                phase="move",
+                experiment_id=experiment_id,
+                cycle_id=cycle_id,
+                meas_id=meas_id,
+                target="rover",
+                timeout_s=timeouts.mov_s,
+            )
 
             got_move_done = False
             move_status = "unknown"
@@ -439,21 +585,46 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                 ):
                     got_move_done = True
                     move_status = str(msg.get("status", "ok"))
-                    print(f"[server][exp {experiment_id}][meas {meas_id}] <- rover MOVE_DONE  status={move_status}")
+                    log_recv(cid, msg, matched=True, phase="move")
                     if move_status == "error":
-                        print(f"[server][exp {experiment_id}][meas {meas_id}] rover error: {msg.get('error')}")
+                        log_event(
+                            logging.ERROR,
+                            "phase.error",
+                            phase="move",
+                            experiment_id=experiment_id,
+                            cycle_id=cycle_id,
+                            meas_id=meas_id,
+                            source=cid,
+                            error=msg.get("error"),
+                        )
                 elif mtype == "ERROR" and mid_exp == experiment_id and mid_meas == meas_id:
-                    print(f"[server][exp {experiment_id}][meas {meas_id}] <- {cid} ERROR: {msg.get('error')}")
+                    log_recv(cid, msg, matched=False, phase="move")
                 elif mtype == "HELLO":
                     alive.add(cid)
+                    log_recv(cid, msg, alive=sorted(alive))
                 else:
-                    print(
-                        f"[server][exp {experiment_id}][meas {meas_id}] "
-                        f"(ignored) <- {cid} {mtype} exp={mid_exp} meas={mid_meas}"
+                    log_event(
+                        logging.WARNING,
+                        "recv.ignored",
+                        phase="move",
+                        source=cid,
+                        msg_type=mtype,
+                        experiment_id=mid_exp,
+                        cycle_id=mid_cycle,
+                        meas_id=mid_meas,
                     )
 
             if not got_move_done:
-                print(f"[server][exp {experiment_id}][meas {meas_id}] TIMEOUT waiting MOVE_DONE — aborting")
+                log_event(
+                    logging.ERROR,
+                    "phase.timeout",
+                    phase="move",
+                    experiment_id=experiment_id,
+                    cycle_id=cycle_id,
+                    meas_id=meas_id,
+                    expected="MOVE_DONE",
+                    timeout_s=timeouts.mov_s,
+                )
                 break
 
             capture_and_log_position(
@@ -472,8 +643,17 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                 "meas_id":       meas_id,
                 "ts":            now_ms(),
             }
-            print(f"[server][exp {experiment_id}][meas {meas_id}] -> acoustic START_MEAS")
             send_to("acoustic", start_meas_msg)
+            log_event(
+                logging.INFO,
+                "phase.start",
+                phase="acoustic",
+                experiment_id=experiment_id,
+                cycle_id=cycle_id,
+                meas_id=meas_id,
+                target="acoustic",
+                timeout_s=timeouts.meas_s,
+            )
 
             got_meas_done = False
             deadline = time.time() + timeouts.meas_s
@@ -496,21 +676,46 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                 ):
                     got_meas_done = True
                     status = msg.get("status", "ok")
-                    print(f"[server][exp {experiment_id}][meas {meas_id}] <- acoustic MEAS_DONE  status={status}")
+                    log_recv(cid, msg, matched=True, phase="acoustic")
                     if status == "error":
-                        print(f"[server][exp {experiment_id}][meas {meas_id}] acoustic error: {msg.get('error')}")
+                        log_event(
+                            logging.ERROR,
+                            "phase.error",
+                            phase="acoustic",
+                            experiment_id=experiment_id,
+                            cycle_id=cycle_id,
+                            meas_id=meas_id,
+                            source=cid,
+                            error=msg.get("error"),
+                        )
                 elif mtype == "ERROR" and mid_exp == experiment_id and mid_meas == meas_id:
-                    print(f"[server][exp {experiment_id}][meas {meas_id}] <- {cid} ERROR: {msg.get('error')}")
+                    log_recv(cid, msg, matched=False, phase="acoustic")
                 elif mtype == "HELLO":
                     alive.add(cid)
+                    log_recv(cid, msg, alive=sorted(alive))
                 else:
-                    print(
-                        f"[server][exp {experiment_id}][meas {meas_id}] "
-                        f"(ignored) <- {cid} {mtype} exp={mid_exp} meas={mid_meas}"
+                    log_event(
+                        logging.WARNING,
+                        "recv.ignored",
+                        phase="acoustic",
+                        source=cid,
+                        msg_type=mtype,
+                        experiment_id=mid_exp,
+                        cycle_id=mid_cycle,
+                        meas_id=mid_meas,
                     )
 
             if not got_meas_done:
-                print(f"[server][exp {experiment_id}][meas {meas_id}] TIMEOUT waiting MEAS_DONE — aborting")
+                log_event(
+                    logging.ERROR,
+                    "phase.timeout",
+                    phase="acoustic",
+                    experiment_id=experiment_id,
+                    cycle_id=cycle_id,
+                    meas_id=meas_id,
+                    expected="MEAS_DONE",
+                    timeout_s=timeouts.meas_s,
+                )
                 break
 
             # -------------------------------------------------------------- RF MEAS
@@ -521,8 +726,17 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                 "meas_id":       meas_id,
                 "ts":            now_ms(),
             }
-            print(f"[server][exp {experiment_id}][meas {meas_id}] -> rf START_MEAS")
             send_to("rf", start_rf_msg)
+            log_event(
+                logging.INFO,
+                "phase.start",
+                phase="rf",
+                experiment_id=experiment_id,
+                cycle_id=cycle_id,
+                meas_id=meas_id,
+                target="rf",
+                timeout_s=timeouts.meas_s,
+            )
 
             got_rf_done = False
             deadline = time.time() + timeouts.meas_s
@@ -545,27 +759,57 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                 ):
                     got_rf_done = True
                     status = msg.get("status", "ok")
-                    print(f"[server][exp {experiment_id}][meas {meas_id}] <- rf MEAS_DONE  status={status}")
+                    log_recv(cid, msg, matched=True, phase="rf")
                     if status == "error":
-                        print(f"[server][exp {experiment_id}][meas {meas_id}] rf error: {msg.get('error')}")
+                        log_event(
+                            logging.ERROR,
+                            "phase.error",
+                            phase="rf",
+                            experiment_id=experiment_id,
+                            cycle_id=cycle_id,
+                            meas_id=meas_id,
+                            source=cid,
+                            error=msg.get("error"),
+                        )
                 elif mtype == "ERROR" and mid_exp == experiment_id and mid_meas == meas_id:
-                    print(f"[server][exp {experiment_id}][meas {meas_id}] <- {cid} ERROR: {msg.get('error')}")
+                    log_recv(cid, msg, matched=False, phase="rf")
                 elif mtype == "HELLO":
                     alive.add(cid)
+                    log_recv(cid, msg, alive=sorted(alive))
                 else:
-                    print(
-                        f"[server][exp {experiment_id}][meas {meas_id}] "
-                        f"(ignored) <- {cid} {mtype} exp={mid_exp} meas={mid_meas}"
+                    log_event(
+                        logging.WARNING,
+                        "recv.ignored",
+                        phase="rf",
+                        source=cid,
+                        msg_type=mtype,
+                        experiment_id=mid_exp,
+                        cycle_id=mid_cycle,
+                        meas_id=mid_meas,
                     )
 
             if not got_rf_done:
-                print(f"[server][exp {experiment_id}][meas {meas_id}] TIMEOUT waiting rf MEAS_DONE — aborting")
+                log_event(
+                    logging.ERROR,
+                    "phase.timeout",
+                    phase="rf",
+                    experiment_id=experiment_id,
+                    cycle_id=cycle_id,
+                    meas_id=meas_id,
+                    expected="MEAS_DONE",
+                    timeout_s=timeouts.meas_s,
+                )
                 break
 
-            print(f"[server][exp {experiment_id}][meas {meas_id}] cycle complete\n")
+            log_banner(
+                "cycle.complete",
+                experiment_id=experiment_id,
+                cycle_id=cycle_id,
+                meas_id=meas_id,
+            )
 
     finally:
-        print("[server] shutting down")
+        log_banner("server.shutdown", experiment_id=experiment_id)
         close_positioning_runtime(positioning_runtime)
         sock.close()
         ctx.term()
