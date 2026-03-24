@@ -32,12 +32,154 @@ tx_waveforms.py --args addr=192.168.10.2 --freq 2.4e9 --rate 1e6 --duration 10
 """
 
 import argparse
+import json
+import threading
 import time
+from pathlib import Path
 
 import numpy as np
 import uhd
+import yaml
+import zmq
 
 # from uhd.usrp import dram_utils
+
+
+REF_CLIENT_ID = "ref"
+
+
+def now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def jdump(obj):
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def jload(payload):
+    return json.loads(payload.decode("utf-8"))
+
+
+def load_experiment_settings(path: str):
+    settings_path = Path(path).expanduser().resolve()
+    with open(settings_path, "r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
+
+
+def resolve_orchestrator_connect(args):
+    if args.orchestrator_connect:
+        return args.orchestrator_connect
+    if not args.config_file:
+        return None
+
+    settings = load_experiment_settings(args.config_file)
+    server_settings = settings.get("server") or {}
+    host = server_settings.get("host")
+    port = server_settings.get("orchestrator_port", 5555)
+    if not host:
+        raise ValueError(
+            "Missing server.host in experiment settings; "
+            "set server.host or pass --orchestrator-connect."
+        )
+    if "://" in str(host):
+        return str(host)
+    return f"tcp://{host}:{port}"
+
+
+def ref_status_client(
+    connect: str,
+    client_id: str,
+    started_event: threading.Event,
+    active_event: threading.Event,
+    shutdown_event: threading.Event,
+    error_state: dict,
+) -> None:
+    ctx = zmq.Context()
+    sock = ctx.socket(zmq.DEALER)
+    sock.linger = 0
+    sock.setsockopt(zmq.IDENTITY, client_id.encode("utf-8"))
+    sock.connect(connect)
+
+    poller = zmq.Poller()
+    poller.register(sock, zmq.POLLIN)
+
+    hello_sent = False
+    shutdown_notice_sent = False
+
+    try:
+        while not shutdown_event.is_set():
+            if started_event.is_set() and not hello_sent:
+                sock.send(
+                    jdump(
+                        {
+                            "type": "HELLO",
+                            "id": client_id,
+                            "service": "run-ref",
+                            "status": "started",
+                            "ts": now_ms(),
+                        }
+                    )
+                )
+                hello_sent = True
+                print(f"[{client_id}] announced readiness to {connect}")
+
+            events = dict(poller.poll(250))
+            if sock in events:
+                msg = jload(sock.recv())
+                mtype = msg.get("type")
+                ping_id = msg.get("ping_id")
+
+                if mtype == "PING":
+                    if active_event.is_set():
+                        sock.send(
+                            jdump(
+                                {
+                                    "type": "PONG",
+                                    "id": client_id,
+                                    "ping_id": ping_id,
+                                    "ts": now_ms(),
+                                }
+                            )
+                        )
+                    else:
+                        sock.send(
+                            jdump(
+                                {
+                                    "type": "ERROR",
+                                    "id": client_id,
+                                    "ping_id": ping_id,
+                                    "error": error_state.get("message") or "run-ref inactive",
+                                    "ts": now_ms(),
+                                }
+                            )
+                        )
+                else:
+                    sock.send(
+                        jdump(
+                            {
+                                "type": "ERROR",
+                                "id": client_id,
+                                "error": f"Unexpected message type: {mtype}",
+                                "ts": now_ms(),
+                            }
+                        )
+                    )
+
+            if hello_sent and not active_event.is_set() and error_state.get("message") and not shutdown_notice_sent:
+                sock.send(
+                    jdump(
+                        {
+                            "type": "ERROR",
+                            "id": client_id,
+                            "error": error_state["message"],
+                            "ts": now_ms(),
+                        }
+                    )
+                )
+                shutdown_notice_sent = True
+    finally:
+        sock.close()
+        ctx.term()
 
 
 def parse_args():
@@ -129,10 +271,28 @@ def parse_args():
         action="store_true",
         help="specifies the operation mode (Host based or RFNoC Replay). If argument --dram is specified, the program will attempt to use RFNoC Replay mode, else Host Based",
     )
+    parser.add_argument(
+        "--config-file",
+        type=str,
+        default=None,
+        help="Optional experiment-settings.yaml used to derive the orchestrator endpoint.",
+    )
+    parser.add_argument(
+        "--orchestrator-connect",
+        type=str,
+        default=None,
+        help="Optional ZMQ endpoint of zmq_orchestrator.py, for example tcp://server:5555.",
+    )
+    parser.add_argument(
+        "--orchestrator-id",
+        type=str,
+        default=REF_CLIENT_ID,
+        help=f"Identity used for the orchestrator readiness link [default: {REF_CLIENT_ID}]",
+    )
     return parser.parse_args()
 
 
-def multi_usrp_tx(args):
+def multi_usrp_tx(args, on_tx_started=None):
     """multi_usrp based TX example.
 
     The function sets up and transmits a waveform using
@@ -171,6 +331,8 @@ def multi_usrp_tx(args):
     print(
         f"Starting to stream waveform at the rate of {args.rate} samples/sec for the duration of {args.duration} seconds..."
     )
+    if on_tx_started is not None:
+        on_tx_started()
     usrp.send_waveform(
         data,
         args.duration,
@@ -183,7 +345,7 @@ def multi_usrp_tx(args):
     print("Transmission complete.")
 
 
-def rfnoc_dram_tx(args):
+def rfnoc_dram_tx(args, on_tx_started=None):
     """rfnoc_graph + replay-block based TX example.
 
     Refer Replay Block usage here <https://kb.ettus.com/Using_the_RFNoC_Replay_Block>.
@@ -281,6 +443,8 @@ def rfnoc_dram_tx(args):
         tx_md.start_of_burst = True
         tx_md.end_of_burst = True
         # Upload and send at time specified by tx_start_time
+        if on_tx_started is not None:
+            on_tx_started()
         dram.send(data, tx_md, 1.0)
     else:
         # Upload
@@ -305,6 +469,8 @@ def rfnoc_dram_tx(args):
         print(
             f"Starting to stream waveform at the rate of {args.rate} samples/sec for the duration of {args.duration} seconds..."
         )
+        if on_tx_started is not None:
+            on_tx_started()
         dram.issue_stream_cmd(stream_cmd)
     if args.duration > 0:
         print("Waiting for transmission to complete...")
@@ -343,10 +509,47 @@ def main():
     args = parse_args()
     if not isinstance(args.channels, list):
         args.channels = [args.channels]
-    if args.dram:
-        rfnoc_dram_tx(args)
-    else:
-        multi_usrp_tx(args)
+
+    orchestrator_connect = resolve_orchestrator_connect(args)
+    started_event = threading.Event()
+    active_event = threading.Event()
+    shutdown_event = threading.Event()
+    error_state = {"message": ""}
+    monitor_thread = None
+
+    if orchestrator_connect:
+        monitor_thread = threading.Thread(
+            target=ref_status_client,
+            args=(
+                orchestrator_connect,
+                args.orchestrator_id,
+                started_event,
+                active_event,
+                shutdown_event,
+                error_state,
+            ),
+            daemon=True,
+            name="ref_status_client",
+        )
+        monitor_thread.start()
+
+    def on_tx_started():
+        active_event.set()
+        started_event.set()
+
+    try:
+        if args.dram:
+            rfnoc_dram_tx(args, on_tx_started=on_tx_started)
+        else:
+            multi_usrp_tx(args, on_tx_started=on_tx_started)
+    except Exception as exc:
+        error_state["message"] = str(exc)
+        raise
+    finally:
+        active_event.clear()
+        shutdown_event.set()
+        if monitor_thread is not None:
+            monitor_thread.join(timeout=2.0)
 
 
 if __name__ == "__main__":

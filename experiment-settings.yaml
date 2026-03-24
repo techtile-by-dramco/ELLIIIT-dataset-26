@@ -7,6 +7,7 @@ organisation: "techtile-by-dramco"  # github org
 # Server settings
 server:
   host: "techtile-geof.local"
+  orchestrator_port: 5555
   messaging_port: 5678
   sync_port: 5679
 heartbeat_interval: 10
@@ -63,11 +64,10 @@ client_scripts:
     args:
     - "--phase"
     - "0"
-    - "--config-file"
-    - "/home/pi/ELLIIIT-dataset-26/experiment-settings.yaml"
     tiles: "T01"
   - name: "run-ref.py"
     args:
+    - '--config-file /home/pi/ELLIIIT-dataset-26/experiment-settings.yaml'
     - '--args "type=b200"'
     - '--freq 920e6' 
     - '--rate 250e3' 

@@ -90,7 +90,7 @@ Important distinctions:
 
 - `server/record/RF-orchestrator.py` is the `rf` client seen by `server/zmq_orchestrator.py`.
 - `client/run_reciprocity.py`, `client/run_uncalibrated.py`, and `client/usrp_pilot.py` are not the `rf` client. They are RF tile workers started through `client_scripts`.
-- `client/run-ref.py` is a continuous support transmitter and does not wait for a per-measurement start command.
+- `client/run-ref.py` is a continuous support transmitter. It still does not wait for a per-measurement start command, but it now registers once with `server/zmq_orchestrator.py` as the mandatory `ref` readiness client.
 - `client/rover/simulate_roverMove.py` is a standalone test script. For orchestrated rover control, use `client/rover/ZMQclient_rover.py`.
 - `server/zmq_orchestrator.py` uses [`server/serverConfig.json`](/mnt/c/Users/Calle/OneDrive/Documenten/GitHub/ELLIIIT-dataset-26/server/serverConfig.json) for its ROUTER bind address and port. That is separate from the `server.messaging_port` and `server.sync_port` fields used by the older `server/run_server.py` path.
 
@@ -197,7 +197,7 @@ The RF worker mode is selected per tile group in `experiment-settings.yaml` unde
 - `client/run_reciprocity.py`: per RF `SYNC` cycle, performs one pilot RX capture and one internal loopback capture, then saves `<file_name>_iq.npz` with `pilot_iq`, `loopback_iq`, `pilot_phase`, `pilot_amplitude`, `loopback_phase`, `loopback_amplitude`, `hostname`, `meas_id`, and `file_name`.
 - `client/run_uncalibrated.py`: per RF `SYNC` cycle, performs pilot RX only (no loopback, no TX/BF runtime path). During pilot mode, both RX channels (0 and 1) use `TX/RX` antennas. It saves `<file_name>_iq.npz` with `pilot_iq`, `hostname`, `meas_id`, and `file_name`.
 - `client/usrp_pilot.py`: per RF `SYNC` cycle, transmits the pilot waveform for the configured phase on the selected host.
-- `client/run-ref.py`: continuous reference transmission, independent of the per-cycle ZMQ handshake.
+- `client/run-ref.py`: continuous reference transmission plus one-time readiness registration with the outer orchestrator. The orchestrator pings this `ref` service before each cycle and aborts if it is not responsive.
 
 </details>
 
@@ -234,6 +234,7 @@ Per cycle (cycle_id = k, experiment_id = EXP):
 
 There is no literal `OK` message in the current code. The "go" signal is one of these messages:
 
+- Reference host: starts continuous TX, sends one `HELLO` as `ref`, and later replies `PONG` to orchestrator health checks.
 - Rover host: waits for `MOVE`, performs the motion, replies `MOVE_DONE`.
 - Acoustic host: waits for `START_MEAS`, runs one acoustic capture, replies `MEAS_DONE`.
 - RF orchestrator host: waits for `START_MEAS`, then coordinates one RF fan-out cycle and replies `MEAS_DONE`.
@@ -241,6 +242,7 @@ There is no literal `OK` message in the current code. The "go" signal is one of 
 
 The outer control-plane identities are fixed:
 
+- `ref` for `client/run-ref.py`
 - `rover` for [`client/rover/ZMQclient_rover.py`](/mnt/c/Users/Calle/OneDrive/Documenten/GitHub/ELLIIIT-dataset-26/client/rover/ZMQclient_rover.py)
 - `acoustic` for [`acoustic/ZMQclient_acoustic.py`](/mnt/c/Users/Calle/OneDrive/Documenten/GitHub/ELLIIIT-dataset-26/acoustic/ZMQclient_acoustic.py)
 - `rf` for [`server/record/RF-orchestrator.py`](/mnt/c/Users/Calle/OneDrive/Documenten/GitHub/ELLIIIT-dataset-26/server/record/RF-orchestrator.py)

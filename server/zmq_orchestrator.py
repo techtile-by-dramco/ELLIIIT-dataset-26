@@ -10,6 +10,9 @@ Clients are self-configured on their own hosts. The outer control messages carry
 only coordination identifiers; no measurement parameters are forwarded.
 
 Cycle:
+  ref      -> HELLO                 {id="ref", service="run-ref", status="started"}
+  server   -> PING       (ref)      {ping_id, ts}
+  ref      -> PONG                  {ping_id, ts}
   server   -> MOVE       (rover)    {experiment_id, cycle_id, meas_id, ts}
   rover    -> MOVE_DONE             {experiment_id, cycle_id, meas_id}
   server   -> capture position sample and append exp-<id>-positions.csv
@@ -19,7 +22,7 @@ Cycle:
   rf       -> MEAS_DONE             {experiment_id, cycle_id, meas_id}
   repeat
 
-Run 4 terminals:
+Run 5 terminals:
 
 1) Server:
    python zmq_orchestrator.py server
@@ -34,6 +37,9 @@ Run 4 terminals:
 4) RF orchestrator client:
    python RF-orchestrator.py --connect tcp://127.0.0.1:5555 --id rf --experiment-settings ../experiment-settings.yaml
 
+5) Reference transmitter:
+   python client/run-ref.py --config-file ../experiment-settings.yaml --freq 920e6 --rate 250e3 --duration 1E6 --channels 0 --wave-ampl 0.8 --gain 73 -w sine --wave-freq 0
+
 server_config.json layout:
 {
     "experiment_id": "EXP001",
@@ -41,6 +47,7 @@ server_config.json layout:
     "cycles":        0,            // 0 = run forever
     "meas_start":    1,
     "timeouts": {
+        "ref_s":   5.0,
         "mov_s":   30.0,
         "meas_s":  60.0,
         "poll_ms": 250
@@ -111,6 +118,7 @@ def _validate_server_config(cfg: Dict[str, Any]) -> None:
 
 @dataclass
 class Timeouts:
+    ref_s:   float = 5.0
     mov_s:   float = 30.0
     meas_s:  float = 60.0
     poll_ms: int   = 250
@@ -119,6 +127,7 @@ class Timeouts:
     def from_config(cls, cfg: Dict[str, Any]) -> "Timeouts":
         t = cfg.get("timeouts", {})
         return cls(
+            ref_s   = float(t.get("ref_s",   5.0)),
             mov_s   = float(t.get("mov_s",   30.0)),
             meas_s  = float(t.get("meas_s",  60.0)),
             poll_ms = int(  t.get("poll_ms", 250)),
@@ -276,7 +285,7 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
     poller.register(sock, zmq.POLLIN)
 
     alive: Set[str] = set()
-    needed = {"rover", "acoustic", "rf"}
+    needed = {"rover", "acoustic", "rf", "ref"}
     stop   = {"flag": False}
     positioning_runtime = PositioningRuntime(enabled=False)
 
@@ -299,25 +308,84 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
         msg = jload(parts[-1])
         return cid, msg
 
-    print(f"[server] bound at {bind}")
-    print(f"[server] experiment_id={experiment_id}  cycles={'∞' if cycles == 0 else cycles}  meas_start={meas_start}")
-    print("[server] waiting for HELLO from rover, acoustic, rf (up to 15 s)…")
+    def ensure_client_active(client_id: str, *, timeout_s: float, label: str) -> None:
+        if client_id not in alive:
+            raise RuntimeError(f"Mandatory client '{client_id}' is not connected.")
 
-    t0 = time.time()
-    while not stop["flag"] and alive != needed and (time.time() - t0 < 15.0):
-        got = recv_one(timeout_ms=timeouts.poll_ms)
-        if got is None:
-            continue
-        cid, msg = got
-        if msg.get("type") == "HELLO":
-            alive.add(cid)
-            print(f"[server] HELLO from '{cid}'  (alive={sorted(alive)})")
-        else:
-            print(f"[server] (pre-loop) got {msg.get('type')} from '{cid}'")
+        ping_id = f"{client_id}-{now_ms()}"
+        send_to(
+            client_id,
+            {
+                "type": "PING",
+                "id": "server",
+                "ping_id": ping_id,
+                "ts": now_ms(),
+            },
+        )
+        print(f"[server] -> {client_id} PING ({label})")
 
-    if alive != needed:
-        print(f"[server] WARNING: missing clients: {sorted(needed - alive)}")
-        print("[server] continuing anyway; missing clients will cause timeouts.\n")
+        deadline = time.time() + timeout_s
+        while not stop["flag"] and time.time() < deadline:
+            got = recv_one(timeout_ms=timeouts.poll_ms)
+            if got is None:
+                continue
+
+            cid, msg = got
+            mtype = msg.get("type")
+            mid_ping = msg.get("ping_id")
+
+            if cid == client_id and mtype == "PONG" and mid_ping == ping_id:
+                print(f"[server] <- {client_id} PONG ({label})")
+                return
+
+            if cid == client_id and mtype == "ERROR":
+                raise RuntimeError(
+                    f"Mandatory client '{client_id}' reported an error during {label}: "
+                    f"{msg.get('error')}"
+                )
+
+            if mtype == "HELLO":
+                alive.add(cid)
+                print(f"[server] HELLO from '{cid}'  (alive={sorted(alive)})")
+            else:
+                print(
+                    f"[server] (during {label}) ignored <- {cid} {mtype} ping_id={mid_ping}"
+                )
+
+        raise RuntimeError(
+            f"Timeout waiting for mandatory client '{client_id}' during {label}."
+        )
+
+    try:
+        print(f"[server] bound at {bind}")
+        print(f"[server] experiment_id={experiment_id}  cycles={'∞' if cycles == 0 else cycles}  meas_start={meas_start}")
+        print("[server] waiting for HELLO from rover, acoustic, rf, ref (up to 15 s)…")
+
+        t0 = time.time()
+        while not stop["flag"] and alive != needed and (time.time() - t0 < 15.0):
+            got = recv_one(timeout_ms=timeouts.poll_ms)
+            if got is None:
+                continue
+            cid, msg = got
+            if msg.get("type") == "HELLO":
+                alive.add(cid)
+                print(f"[server] HELLO from '{cid}'  (alive={sorted(alive)})")
+            else:
+                print(f"[server] (pre-loop) got {msg.get('type')} from '{cid}'")
+
+        if "ref" not in alive:
+            raise RuntimeError(
+                "Mandatory client 'ref' did not announce readiness. "
+                "Ensure client/run-ref.py is transmitting and connected to the orchestrator."
+            )
+
+        if alive != needed:
+            print(f"[server] WARNING: missing non-mandatory clients: {sorted(needed - alive)}")
+            print("[server] continuing anyway; missing clients will cause timeouts.\n")
+    except Exception:
+        sock.close()
+        ctx.term()
+        raise
 
     cycle_id = 0
     meas_id  = meas_start - 1
@@ -334,6 +402,12 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                 break
 
             meas_id += 1
+
+            ensure_client_active(
+                "ref",
+                timeout_s=timeouts.ref_s,
+                label=f"pre-cycle meas {meas_id}",
+            )
 
             # ------------------------------------------------------------------ MOVE
             move_msg: Dict[str, Any] = {
