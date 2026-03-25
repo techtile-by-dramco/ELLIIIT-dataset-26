@@ -250,8 +250,23 @@ def rover_client(connect: str, config_path: Path) -> None:
             if cycle_positions:
                 pos_index = (move_counter - 1) % len(positions)
             else:
-                # Clamp to last position once the grid is exhausted
-                pos_index = min(move_counter - 1, len(positions) - 1)
+                pos_index = move_counter - 1
+                if pos_index >= len(positions):
+                    print(
+                        f"[{CLIENT_ID}][exp {experiment_id}][meas {meas_id}] "
+                        f"ERROR: grid exhausted after {len(positions)} position(s)."
+                    )
+                    send({
+                        "type":          "MOVE_DONE",
+                        "experiment_id": experiment_id,
+                        "cycle_id":      cycle_id,
+                        "meas_id":       meas_id,
+                        "id":            CLIENT_ID,
+                        "status":        "error",
+                        "error":         f"Grid exhausted: all {len(positions)} positions have been used.",
+                        "ts":            now_ms(),
+                    })
+                    continue
 
             x, y = positions[pos_index]
 

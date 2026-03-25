@@ -15,6 +15,6 @@ grid:
   y_end:   900.0    # last row
   spacing: 150.0    # distance between adjacent nodes [mm]
 
-cycle_positions: true
+cycle_positions: false
 home_after_move: false
 verbose: false
