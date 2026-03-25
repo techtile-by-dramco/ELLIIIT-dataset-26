@@ -54,7 +54,7 @@ client_scripts:
     args:
     - "--config-file"
     - "/home/pi/ELLIIIT-dataset-26/experiment-settings.yaml"
-  #   tiles: "ceiling"
+    tiles: "ceiling"
   # - name: "run_uncalibrated.py"
   #   args:
   #   - "--config-file"
