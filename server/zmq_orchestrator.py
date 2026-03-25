@@ -401,7 +401,8 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
     poller.register(sock, zmq.POLLIN)
 
     alive: Set[str] = set()
-    needed = {"rover", "acoustic", "rf", "ref"}
+    startup_needed = {"rover", "acoustic", "rf"}
+    measurement_needed = {"ref"}
     stop   = {"flag": False}
     positioning_runtime = PositioningRuntime(enabled=False)
 
@@ -426,8 +427,48 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
         return cid, msg
 
     def ensure_client_active(client_id: str, *, timeout_s: float, label: str) -> None:
+        deadline = time.time() + timeout_s
+
         if client_id not in alive:
-            raise RuntimeError(f"Mandatory client '{client_id}' is not connected.")
+            log_event(
+                logging.INFO,
+                "healthcheck.wait_for_hello",
+                client=client_id,
+                label=label,
+                timeout_s=timeout_s,
+            )
+            while not stop["flag"] and time.time() < deadline and client_id not in alive:
+                got = recv_one(timeout_ms=timeouts.poll_ms)
+                if got is None:
+                    continue
+
+                cid, msg = got
+                mtype = msg.get("type")
+
+                if mtype == "HELLO":
+                    alive.add(cid)
+                    log_recv(cid, msg, alive=sorted(alive))
+                    continue
+
+                if cid == client_id and mtype == "ERROR":
+                    raise RuntimeError(
+                        f"Mandatory client '{client_id}' reported an error during {label}: "
+                        f"{msg.get('error')}"
+                    )
+
+                log_event(
+                    logging.WARNING,
+                    "recv.ignored",
+                    phase=label,
+                    source=cid,
+                    msg_type=mtype,
+                )
+
+            if client_id not in alive:
+                raise RuntimeError(
+                    f"Mandatory client '{client_id}' did not announce readiness before {label}. "
+                    "Ensure client/run-ref.py is transmitting and connected to the orchestrator."
+                )
 
         ping_id = f"{client_id}-{now_ms()}"
         send_to(
@@ -448,7 +489,6 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
             ping_id=ping_id,
         )
 
-        deadline = time.time() + timeout_s
         while not stop["flag"] and time.time() < deadline:
             got = recv_one(timeout_ms=timeouts.poll_ms)
             if got is None:
@@ -496,12 +536,13 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
         log_event(
             logging.INFO,
             "handshake.wait",
-            expected_clients=sorted(needed),
+            expected_clients=sorted(startup_needed),
+            deferred_clients=sorted(measurement_needed),
             timeout_s=15.0,
         )
 
         t0 = time.time()
-        while not stop["flag"] and alive != needed and (time.time() - t0 < 15.0):
+        while not stop["flag"] and not startup_needed.issubset(alive) and (time.time() - t0 < 15.0):
             got = recv_one(timeout_ms=timeouts.poll_ms)
             if got is None:
                 continue
@@ -517,21 +558,20 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                     msg_type=msg.get("type"),
                 )
 
-        if "ref" not in alive:
-            raise RuntimeError(
-                "Mandatory client 'ref' did not announce readiness. "
-                "Ensure client/run-ref.py is transmitting and connected to the orchestrator."
-            )
-
-        if alive != needed:
+        if not startup_needed.issubset(alive):
             log_event(
                 logging.WARNING,
                 "handshake.partial",
                 connected=sorted(alive),
-                missing=sorted(needed - alive),
+                missing=sorted(startup_needed - alive),
             )
         else:
-            log_event(logging.INFO, "handshake.complete", connected=sorted(alive))
+            log_event(
+                logging.INFO,
+                "handshake.complete",
+                connected=sorted(alive),
+                pending_measurement_clients=sorted(measurement_needed - alive),
+            )
     except Exception:
         sock.close()
         ctx.term()
