@@ -12,47 +12,50 @@ Protocol:
   client -> MOVE_DONE {experiment_id, cycle_id, meas_id, status="ok"}
           | MOVE_DONE {experiment_id, cycle_id, meas_id, status="error", error=<str>}
 
-All movement parameters are read exclusively from rover_config.json.
+All movement parameters are read exclusively from rover_config.yaml.
 The server sends no parameters; messages carry only coordination identifiers.
 
-rover_config.json layout:
-{
-    "serial_port":       "COM3",
-    "baudrate":          115200,
-    "work_area":         { "width": 1250.0, "height": 1250.0, "margin": 10.0 },
-    "feed_rate":         20.0,
-    "positions":         [[100.0, 100.0], [300.0, 100.0], [300.0, 300.0]],
-    "cycle_positions":   true,
-    "home_after_move":   true,
-    "verbose":           false
-}
+rover_config.yaml layout:
+  serial_port: /dev/ttyUSB0
+  baudrate: 115200
+  work_area:
+    width: 1250.0
+    height: 1250.0
+    margin: 10.0
+  feed_rate: 4000.0
+  grid:
+    x_start: 300.0
+    y_start: 300.0
+    x_end:   900.0
+    y_end:   900.0
+    spacing: 150.0
+  cycle_positions: true
+  home_after_move: false
+  verbose: false
 
 Usage:
   python zmqclient_rover.py --connect tcp://127.0.0.1:5555
-  python zmqclient_rover.py --connect tcp://127.0.0.1:5555 --config rover_config.json
+  python zmqclient_rover.py --connect tcp://127.0.0.1:5555 --config-file config.yaml
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import signal
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import zmq
+import yaml
 
 from rover import WorkArea, XYPlotter
 
 CLIENT_ID = "rover"
 
-DEFAULT_CONFIG_PATH = Path(__file__).parent / "config.json"
-
-
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
+DEFAULT_CONFIG_PATH = Path(__file__).parent / "config.yaml"
 
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -65,16 +68,11 @@ def jdump(obj: Dict[str, Any]) -> bytes:
 def jload(b: bytes) -> Dict[str, Any]:
     return json.loads(b.decode("utf-8"))
 
-
-# ---------------------------------------------------------------------------
-# config
-# ---------------------------------------------------------------------------
-
 def load_config(path: Path) -> Dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Rover config not found: {path}")
     with open(path) as f:
-        cfg = json.load(f)
+        cfg = yaml.safe_load(f)
     _validate_config(cfg)
     return cfg
 
@@ -82,28 +80,69 @@ def load_config(path: Path) -> Dict[str, Any]:
 def _validate_config(cfg: Dict[str, Any]) -> None:
     if "serial_port" not in cfg:
         raise ValueError("rover_config must contain 'serial_port'")
-    positions = cfg.get("positions")
-    if not positions:
-        raise ValueError("rover_config must contain a non-empty 'positions' list")
-    for pos in positions:
-        if len(pos) != 2:
-            raise ValueError(f"Each position must be [x, y], got: {pos}")
+
+    grid = cfg.get("grid")
+    if not grid:
+        raise ValueError("rover_config must contain a 'grid' section")
+
+    for key in ("x_start", "y_start", "x_end", "y_end", "spacing"):
+        if key not in grid:
+            raise ValueError(f"rover_config.grid must contain '{key}'")
+
+    if float(grid["spacing"]) <= 0:
+        raise ValueError("grid.spacing must be positive")
 
 
-# ---------------------------------------------------------------------------
-# movement
-# ---------------------------------------------------------------------------
+def build_grid(cfg: Dict[str, Any]) -> List[Tuple[float, float]]:
+    """
+    Build a flat list of (x, y) grid nodes in serpentine order.
 
-def run_rover(x: float, y: float, cfg: Dict[str, Any], move_counter) -> None:
+    Rows run along Y; columns run along X.
+    Even rows (0-indexed) go left→right; odd rows go right→left.
+    """
+    grid   = cfg["grid"]
+    x0     = float(grid["x_start"])
+    y0     = float(grid["y_start"])
+    x1     = float(grid["x_end"])
+    y1     = float(grid["y_end"])
+    step   = float(grid["spacing"])
+
+    # Build axis arrays (inclusive of end points within half a step tolerance)
+    def axis(start: float, end: float) -> List[float]:
+        lo, hi = (start, end) if start <= end else (end, start)
+        values: List[float] = []
+        v = lo
+        while v <= hi + step * 1e-6:
+            values.append(round(v, 6))
+            v += step
+        return values if start <= end else list(reversed(values))
+
+    xs = axis(x0, x1)
+    ys = axis(y0, y1)
+
+    points: List[Tuple[float, float]] = []
+    for row_idx, y in enumerate(ys):
+        row_xs = xs if row_idx % 2 == 0 else list(reversed(xs))
+        for x in row_xs:
+            points.append((x, y))
+
+    return points
+
+def run_rover(
+    x: float,
+    y: float,
+    cfg: Dict[str, Any],
+    move_counter: int,
+) -> None:
     """Move the plotter to (x, y) using settings from cfg."""
-    wa    = cfg.get("work_area", {})
-    area  = WorkArea(
-        width  = float(wa.get("width",  1250.0)),
-        height = float(wa.get("height", 1250.0)),
-        margin = float(wa.get("margin",   10.0)),
+    wa_cfg = cfg.get("work_area", {})
+    area   = WorkArea(
+        width  = float(wa_cfg.get("width",  1250.0)),
+        height = float(wa_cfg.get("height", 1250.0)),
+        margin = float(wa_cfg.get("margin",   10.0)),
     )
-    feed_rate       = float(cfg.get("feed_rate", 20.0))
-    home_after_move = bool(cfg.get("home_after_move", True))
+    feed_rate       = float(cfg.get("feed_rate", 4000.0))
+    home_after_move = bool(cfg.get("home_after_move", False))
     port            = cfg["serial_port"]
     baudrate        = int(cfg.get("baudrate", 115200))
 
@@ -127,20 +166,18 @@ def run_rover(x: float, y: float, cfg: Dict[str, Any], move_counter) -> None:
 
     print(f"[{CLIENT_ID}] move complete in {round(time.time() - t_start, 3)} s")
 
-
-# ---------------------------------------------------------------------------
-# ZMQ client
-# ---------------------------------------------------------------------------
-
 def rover_client(connect: str, config_path: Path) -> None:
-    cfg: Dict[str, Any]         = load_config(config_path)
-    positions: List[List[float]] = cfg["positions"]
-    cycle_positions: bool        = cfg.get("cycle_positions", True)
+    cfg: Dict[str, Any]  = load_config(config_path)
+    cycle_positions: bool = cfg.get("cycle_positions", True)
 
+    positions = build_grid(cfg)
     print(f"[{CLIENT_ID}] loaded config from {config_path}")
-    print(f"[{CLIENT_ID}] {len(positions)} position(s) configured")
+    print(f"[{CLIENT_ID}] grid has {len(positions)} node(s)")
+    if cfg.get("verbose"):
+        for i, (x, y) in enumerate(positions):
+            print(f"  [{i:4d}]  X={x:.3f}  Y={y:.3f}")
 
-    ctx = zmq.Context.instance()
+    ctx  = zmq.Context.instance()
     sock = ctx.socket(zmq.DEALER)
     sock.linger = 0
     sock.setsockopt(zmq.IDENTITY, CLIENT_ID.encode("utf-8"))
@@ -150,7 +187,7 @@ def rover_client(connect: str, config_path: Path) -> None:
     poller.register(sock, zmq.POLLIN)
 
     stop         = {"flag": False}
-    move_counter = 0           # tracks how many MOVE commands have been received
+    move_counter = 0
 
     def _sigint(_sig, _frame):
         stop["flag"] = True
@@ -181,12 +218,18 @@ def rover_client(connect: str, config_path: Path) -> None:
 
         if mtype == "MOVE":
             move_counter += 1
-            pos_index = ((move_counter - 1) % len(positions)) if cycle_positions else 0
-            x, y = float(positions[pos_index][0]), float(positions[pos_index][1])
+
+            if cycle_positions:
+                pos_index = (move_counter - 1) % len(positions)
+            else:
+                # Clamp to last position once the grid is exhausted
+                pos_index = min(move_counter - 1, len(positions) - 1)
+
+            x, y = positions[pos_index]
 
             print(
                 f"[{CLIENT_ID}][exp {experiment_id}][meas {meas_id}] "
-                f"MOVE received  → position[{pos_index}] X={x}  Y={y}"
+                f"MOVE received  → grid[{pos_index}] X={x:.3f}  Y={y:.3f}"
             )
 
             try:
@@ -237,11 +280,6 @@ def rover_client(connect: str, config_path: Path) -> None:
     sock.close()
     ctx.term()
 
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Rover movement ZMQ client")
     p.add_argument(
@@ -249,8 +287,8 @@ def parse_args() -> argparse.Namespace:
         help="ZMQ endpoint of the orchestrator server",
     )
     p.add_argument(
-        "--config", default=str(DEFAULT_CONFIG_PATH),
-        help="Path to rover_config.json  (default: ./rover_config.json)",
+        "--config-file", default=str(DEFAULT_CONFIG_PATH),
+        help="Path to rover_config.yaml  (default: ./config.yaml)",
     )
     return p.parse_args()
 
