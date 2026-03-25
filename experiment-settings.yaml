@@ -67,16 +67,26 @@ client_scripts:
     tiles: "T01"
   - name: "run-ref.py"
     args:
-    - '--config-file /home/pi/ELLIIIT-dataset-26/experiment-settings.yaml'
-    - '--args "type=b200"'
-    - '--freq 920e6' 
-    - '--rate 250e3' 
-    - '--duration 1E6' 
-    - '--channels 0' 
-    - '--wave-ampl 0.8' 
-    - '--gain 73' 
-    - '--waveform sine'
-    - '--wave-freq 0'
+    - '--config-file'
+    - '/home/pi/ELLIIIT-dataset-26/experiment-settings.yaml'
+    - '--args'
+    - "type=b200"
+    - '--freq'
+    - '920e6'
+    - '--rate'
+    - '250e3'
+    - '--duration'
+    - '1E6'
+    - '--channels'
+    - '0'
+    - '--wave-ampl'
+    - '0.8'
+    - '--gain'
+    - '73'
+    - '--waveform'
+    - 'sine'
+    - '--wave-freq'
+    - '0'
     tiles: "T02"
   # - name: "rover/simulate_roverMove.py"
   #   tiles: "R01"
