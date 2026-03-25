@@ -29,7 +29,7 @@ Run 5 terminals:
    python zmq_orchestrator.py server --config path/to/serverConfig.yaml
 
 2) Rover client:
-   python zmqclient_rover.py --connect tcp://127.0.0.1:5555
+     python zmqclient_rover.py --connect tcp://127.0.0.1:5555 --config-file config.yaml
 
 3) Acoustic client:
    python zmqclient_acoustic.py --connect tcp://127.0.0.1:5555 --id acoustic

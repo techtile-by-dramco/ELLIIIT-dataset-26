@@ -1,0 +1,20 @@
+serial_port: /dev/ttyUSB0
+baudrate: 115200
+
+work_area:
+  width: 1250.0
+  height: 1250.0
+  margin: 10.0
+
+feed_rate: 4000.0
+
+grid:
+  x_start: 300.0    # first column
+  y_start: 300.0    # first row
+  x_end:   900.0    # last column
+  y_end:   900.0    # last row
+  spacing: 150.0    # distance between adjacent nodes [mm]
+
+cycle_positions: true
+home_after_move: false
+verbose: false
