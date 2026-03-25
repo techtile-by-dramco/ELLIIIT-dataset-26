@@ -6,7 +6,7 @@ organisation: "techtile-by-dramco"  # github org
 
 # Server settings
 server:
-  host: "techtile-geof.local"
+  host: "192.108.2.112"
   orchestrator_port: 5555
   messaging_port: 5678
   sync_port: 5679
@@ -23,7 +23,7 @@ rf_sync:
 
 # Tile settings
 # tiles: "E06 E07 F05 D05"                    # group name, single tile, or space-separated list
-tiles: "R01" # ceiling wallEast wallWest T02 T01 
+tiles: "R01 REF01 T01 ceiling" # ceiling wallEast wallWest 
 # tiles: "G05 G06 G07 G08 G09 G10 F05 F06 F07 F08 F09 F10 E05 E06 E07 E08 E09 E10 D05 D06 D07 D08 D09 D10 C05 C06 C07 C08 C09 C10 B06 B07 B08 B09 B10 A05 A06 A07 A08 A09 A10"                    # group name, single tile, or space-separated list
 # tiles: "G05 G06 G07 G08 G09 G10 F06 F07 F08 F09 F10 E05 E06 E07 E08 E09 E10 D05 D06 D07 D08 D09 D10 C05 C06 C07 C08 C09 B05 B06 B07 B08 B09 B10 A05 A06 A07 A08 A09 A10" # all except C10 this is done manually + F05 is down....
 
@@ -42,44 +42,54 @@ extra_packages:                     # list of extra packages to be installed on 
 
 # Legacy single-script fields kept for compatibility/documentation.
 # The active multi-script deployment uses `client_scripts` below.
-# client_script_name: "run_reciprocity.py"
-# client_script_args:
-#   - "--config-file"
-#   - "/home/pi/ELLIIIT-dataset-26/experiment-settings.yaml"
-#   # - "--tx-phase-file"
-#   # - "tx-phases-friis.yml"
+client_script_name: "run_reciprocity.py"
+client_script_args:
+  - "--config-file"
+  - "/home/pi/ELLIIIT-dataset-26/experiment-settings.yaml"
+  # - "--tx-phase-file"
+  # - "tx-phases-friis.yml"
 
-# client_scripts:
-#   - name: "run_reciprocity.py"
-#     args:
-#     - "--config-file"
-#     - "/home/pi/ELLIIIT-dataset-26/experiment-settings.yaml"
-#     tiles: "ceiling"
-#   # - name: "run_uncalibrated.py"
-#   #   args:
-#   #   - "--config-file"
-#   #   - "/home/pi/ELLIIIT-dataset-26/experiment-settings.yaml"
-#   #   tiles: "wallEast wallWest"
-#   - name: "usrp_pilot.py"
-#     args:
-#     - "--phase"
-#     - "0"
-#     tiles: "T01"
-#   - name: "run-ref.py"
-#     args:
-#     - '--config-file /home/pi/ELLIIIT-dataset-26/experiment-settings.yaml'
-#     - '--args "type=b200"'
-#     - '--freq 920e6' 
-#     - '--rate 250e3' 
-#     - '--duration 1E6' 
-#     - '--channels 0' 
-#     - '--wave-ampl 0.8' 
-#     - '--gain 73' 
-#     - '-w sine'
-#     - '--wave-freq 0'
-#     tiles: "T02"
-#   # - name: "rover/simulate_roverMove.py"
-#   #   tiles: "R01"
+client_scripts:
+  - name: "run_reciprocity.py"
+    args:
+    - "--config-file"
+    - "/home/pi/ELLIIIT-dataset-26/experiment-settings.yaml"
+    tiles: "ceiling"
+  # - name: "run_uncalibrated.py"
+  #   args:
+  #   - "--config-file"
+  #   - "/home/pi/ELLIIIT-dataset-26/experiment-settings.yaml"
+  #   tiles: "wallEast wallWest"
+  - name: "usrp_pilot.py"
+    args:
+    - "--phase"
+    - "0"
+    tiles: "T01"
+  - name: "run-ref.py"
+    args:
+    - '--config-file'
+    - '/home/pi/ELLIIIT-dataset-26/experiment-settings.yaml'
+    - '--args'
+    - "type=b200"
+    - '--freq'
+    - '920e6'
+    - '--rate'
+    - '250e3'
+    - '--duration'
+    - '1E6'
+    - '--channels'
+    - '0'
+    - '--wave-ampl'
+    - '0.8'
+    - '--gain'
+    - '73'
+    - '--waveform'
+    - 'sine'
+    - '--wave-freq'
+    - '0'
+    tiles: "REF01"
+  # - name: "rover/simulate_roverMove.py"
+  #   tiles: "R01"
 
 
 # Server script behaviour
