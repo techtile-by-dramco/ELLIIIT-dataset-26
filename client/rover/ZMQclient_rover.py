@@ -34,8 +34,9 @@ config.yaml layout:
   verbose: false
 
 Usage:
-  python zmqclient_rover.py --connect tcp://127.0.0.1:5555
-  python zmqclient_rover.py --connect tcp://127.0.0.1:5555 --config-file config.yaml
+  python zmqclient_rover.py
+  python zmqclient_rover.py --config-file config.yaml
+  python zmqclient_rover.py --connect tcp://SERVER:5555 --config-file config.yaml
 """
 
 from __future__ import annotations
@@ -56,6 +57,7 @@ from rover import WorkArea, XYPlotter
 CLIENT_ID = "rover"
 
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "config.yaml"
+DEFAULT_EXPERIMENT_SETTINGS_PATH = Path(__file__).resolve().parents[2] / "experiment-settings.yaml"
 
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -67,6 +69,32 @@ def jdump(obj: Dict[str, Any]) -> bytes:
 
 def jload(b: bytes) -> Dict[str, Any]:
     return json.loads(b.decode("utf-8"))
+
+
+def load_experiment_settings(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"Experiment settings not found: {path}")
+    with open(path, "r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
+
+
+def resolve_orchestrator_connect(connect: Optional[str], settings_path: Path) -> str:
+    if connect:
+        return connect
+
+    settings = load_experiment_settings(settings_path)
+    server_settings = settings.get("server") or {}
+    host = server_settings.get("host")
+    port = server_settings.get("orchestrator_port", 5555)
+
+    if not host:
+        raise ValueError(
+            "Missing server.host in experiment settings; "
+            "set server.host or pass --connect."
+        )
+    if "://" in str(host):
+        return str(host)
+    return f"tcp://{host}:{port}"
 
 def load_config(path: Path) -> Dict[str, Any]:
     if not path.exists():
@@ -283,8 +311,14 @@ def rover_client(connect: str, config_path: Path) -> None:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Rover movement ZMQ client")
     p.add_argument(
-        "--connect", default="tcp://127.0.0.1:5555",
-        help="ZMQ endpoint of the orchestrator server",
+        "--connect",
+        default=None,
+        help="ZMQ endpoint of the orchestrator server; defaults to server.host from experiment-settings.yaml",
+    )
+    p.add_argument(
+        "--experiment-settings",
+        default=str(DEFAULT_EXPERIMENT_SETTINGS_PATH),
+        help="Path to experiment-settings.yaml",
     )
     p.add_argument(
         "--config-file", default=str(DEFAULT_CONFIG_PATH),
@@ -295,7 +329,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    rover_client(args.connect, Path(args.config_file))
+    connect = resolve_orchestrator_connect(
+        args.connect,
+        Path(args.experiment_settings),
+    )
+    rover_client(connect, Path(args.config_file))
 
 
 if __name__ == "__main__":

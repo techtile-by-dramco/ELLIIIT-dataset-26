@@ -10,7 +10,8 @@ Protocol:
           | MEAS_DONE   {experiment_id, cycle_id, meas_id, status="error", error=<str>}
 
 Usage:
-  python zmqclient_acoustic.py --connect tcp://127.0.0.1:5555 --id acoustic
+  python zmqclient_acoustic.py --id acoustic
+  python zmqclient_acoustic.py --connect tcp://SERVER:5555 --id acoustic
 """
 
 from __future__ import annotations
@@ -19,11 +20,15 @@ import argparse
 import json
 import signal
 import time
+from pathlib import Path
 from typing import Any, Dict, Optional
 
+import yaml
 import zmq
 
 from acousticMeasurement import run_acoustic_measurement
+
+DEFAULT_EXPERIMENT_SETTINGS_PATH = Path(__file__).resolve().parents[1] / "experiment-settings.yaml"
 
 
 def now_ms() -> int:
@@ -36,6 +41,32 @@ def jdump(obj: Dict[str, Any]) -> bytes:
 
 def jload(b: bytes) -> Dict[str, Any]:
     return json.loads(b.decode("utf-8"))
+
+
+def load_experiment_settings(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"Experiment settings not found: {path}")
+    with open(path, "r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
+
+
+def resolve_orchestrator_connect(connect: Optional[str], settings_path: Path) -> str:
+    if connect:
+        return connect
+
+    settings = load_experiment_settings(settings_path)
+    server_settings = settings.get("server") or {}
+    host = server_settings.get("host")
+    port = server_settings.get("orchestrator_port", 5555)
+
+    if not host:
+        raise ValueError(
+            "Missing server.host in experiment settings; "
+            "set server.host or pass --connect."
+        )
+    if "://" in str(host):
+        return str(host)
+    return f"tcp://{host}:{port}"
 
 
 def measurer_client(connect: str, client_id: str) -> None:
@@ -141,8 +172,14 @@ def measurer_client(connect: str, client_id: str) -> None:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Acoustic measurement ZMQ client")
     p.add_argument(
-        "--connect", default="tcp://127.0.0.1:5555",
-        help="ZMQ endpoint of the orchestrator server",
+        "--connect",
+        default=None,
+        help="ZMQ endpoint of the orchestrator server; defaults to server.host from experiment-settings.yaml",
+    )
+    p.add_argument(
+        "--experiment-settings",
+        default=str(DEFAULT_EXPERIMENT_SETTINGS_PATH),
+        help="Path to experiment-settings.yaml",
     )
     p.add_argument(
         "--id", required=True, choices=["acoustic"],
@@ -153,7 +190,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    measurer_client(args.connect, args.id)
+    connect = resolve_orchestrator_connect(
+        args.connect,
+        Path(args.experiment_settings),
+    )
+    measurer_client(connect, args.id)
 
 
 if __name__ == "__main__":

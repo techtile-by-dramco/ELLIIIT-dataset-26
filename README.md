@@ -79,12 +79,12 @@ python server/run-clients.py --start
 
 # outer control plane
 python server/zmq_orchestrator.py server --config server/serverConfig.yaml --experiment-settings experiment-settings.yaml
-python acoustic/ZMQclient_acoustic.py --connect tcp://SERVER:5555 --id acoustic
-python client/rover/ZMQclient_rover.py --connect tcp://SERVER:5555 --config client/rover/config.json
-python server/record/RF-orchestrator.py --connect tcp://SERVER:5555 --id rf --experiment-settings experiment-settings.yaml
+python acoustic/ZMQclient_acoustic.py --id acoustic
+python client/rover/ZMQclient_rover.py --config-file client/rover/config.yaml
+python server/record/RF-orchestrator.py --id rf --experiment-settings experiment-settings.yaml
 ```
 
-Replace `SERVER` with the host running `server/zmq_orchestrator.py`.
+If `--connect` is omitted, these clients now resolve the orchestrator endpoint from `server.host` and `server.orchestrator_port` in `experiment-settings.yaml`. You only need `--connect tcp://SERVER:5555` when overriding that config value.
 
 Important distinctions:
 

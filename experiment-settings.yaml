@@ -88,8 +88,11 @@ client_scripts:
     - '--wave-freq'
     - '0'
     tiles: "REF01"
-  # - name: "rover/simulate_roverMove.py"
-  #   tiles: "R01"
+  - name: "rover/ZMQclient_rover.py"
+    args:
+    - '--config'
+    - '/home/pi/ELLIIIT-dataset-26/rover/config.yaml'
+    tiles: "R01"
 
 
 # Server script behaviour

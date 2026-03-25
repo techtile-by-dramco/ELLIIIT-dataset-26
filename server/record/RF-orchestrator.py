@@ -66,6 +66,33 @@ def jload(b: bytes) -> Dict[str, Any]:
     return json.loads(b.decode("utf-8"))
 
 
+def load_experiment_settings(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"Experiment settings not found: {path}")
+
+    with open(path, "r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
+
+
+def resolve_orchestrator_connect(connect: Optional[str], settings_path: Path) -> str:
+    if connect:
+        return connect
+
+    settings = load_experiment_settings(settings_path)
+    server_settings = settings.get("server") or {}
+    host = server_settings.get("host")
+    port = server_settings.get("orchestrator_port", 5555)
+
+    if not host:
+        raise ValueError(
+            "Missing server.host in experiment settings; "
+            "set server.host or pass --connect."
+        )
+    if "://" in str(host):
+        return str(host)
+    return f"tcp://{host}:{port}"
+
+
 def load_rf_sync_config(settings_path: Path) -> RFSyncConfig:
     if not settings_path.exists():
         raise FileNotFoundError(f"Experiment settings not found: {settings_path}")
@@ -396,8 +423,8 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="RF measurement ZMQ client")
     p.add_argument(
         "--connect",
-        default="tcp://127.0.0.1:5555",
-        help="ZMQ endpoint of the orchestrator server",
+        default=None,
+        help="ZMQ endpoint of the orchestrator server; defaults to server.host from experiment-settings.yaml",
     )
     p.add_argument(
         "--id",
@@ -415,7 +442,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    rf_client(args.connect, args.id, Path(args.experiment_settings))
+    settings_path = Path(args.experiment_settings)
+    connect = resolve_orchestrator_connect(args.connect, settings_path)
+    rf_client(connect, args.id, settings_path)
 
 
 if __name__ == "__main__":
