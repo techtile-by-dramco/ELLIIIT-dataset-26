@@ -1,19 +1,19 @@
 {
-    "serial_port": "COM3",
+    "serial_port": "/dev/ttyUSB0",
     "baudrate": 115200,
     "work_area": {
         "width": 1250.0,
         "height": 1250.0,
         "margin": 10.0
     },
-    "feed_rate": 20.0,
+    "feed_rate": 4000.0,
     "positions": [
-        [100.0, 100.0],
-        [300.0, 100.0],
         [300.0, 300.0],
-        [100.0, 300.0]
+        [900.0, 300.0],
+        [900.0, 900.0],
+        [300.0, 900.0]
     ],
     "cycle_positions": true,
-    "home_after_move": true,
+    "home_after_move": false,
     "verbose": false
 }

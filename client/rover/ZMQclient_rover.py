@@ -94,7 +94,7 @@ def _validate_config(cfg: Dict[str, Any]) -> None:
 # movement
 # ---------------------------------------------------------------------------
 
-def run_rover(x: float, y: float, cfg: Dict[str, Any]) -> None:
+def run_rover(x: float, y: float, cfg: Dict[str, Any], move_counter) -> None:
     """Move the plotter to (x, y) using settings from cfg."""
     wa    = cfg.get("work_area", {})
     area  = WorkArea(
@@ -119,7 +119,8 @@ def run_rover(x: float, y: float, cfg: Dict[str, Any]) -> None:
     t_start = time.time()
 
     with XYPlotter(port, baudrate=baudrate) as plotter:
-        plotter.home()
+        if move_counter == 1:
+            plotter.home()
         plotter.move(x, y, feed_rate=feed_rate)
         if home_after_move:
             plotter.move_to_origin()
@@ -189,7 +190,7 @@ def rover_client(connect: str, config_path: Path) -> None:
             )
 
             try:
-                run_rover(x, y, cfg)
+                run_rover(x, y, cfg, move_counter)
 
                 response: Dict[str, Any] = {
                     "type":          "MOVE_DONE",

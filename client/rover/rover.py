@@ -464,7 +464,7 @@ def run_rover(x: float, y: float, config: dict) -> None:
     t_start = time.time()
 
     with XYPlotter(port, baudrate=baudrate) as plotter:
-        plotter.home()
+        #plotter.home()
         plotter.move(x, y, feed_rate=feed_rate)
         if home_after_move:
             plotter.move_to_origin()
