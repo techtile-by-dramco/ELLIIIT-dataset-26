@@ -12,10 +12,10 @@ Protocol:
   client -> MOVE_DONE {experiment_id, cycle_id, meas_id, status="ok"}
           | MOVE_DONE {experiment_id, cycle_id, meas_id, status="error", error=<str>}
 
-All movement parameters are read exclusively from rover_config.yaml.
+All movement parameters are read exclusively from config.yaml.
 The server sends no parameters; messages carry only coordination identifiers.
 
-rover_config.yaml layout:
+config.yaml layout:
   serial_port: /dev/ttyUSB0
   baudrate: 115200
   work_area:
@@ -79,15 +79,15 @@ def load_config(path: Path) -> Dict[str, Any]:
 
 def _validate_config(cfg: Dict[str, Any]) -> None:
     if "serial_port" not in cfg:
-        raise ValueError("rover_config must contain 'serial_port'")
+        raise ValueError("config must contain 'serial_port'")
 
     grid = cfg.get("grid")
     if not grid:
-        raise ValueError("rover_config must contain a 'grid' section")
+        raise ValueError("config must contain a 'grid' section")
 
     for key in ("x_start", "y_start", "x_end", "y_end", "spacing"):
         if key not in grid:
-            raise ValueError(f"rover_config.grid must contain '{key}'")
+            raise ValueError(f"config.grid must contain '{key}'")
 
     if float(grid["spacing"]) <= 0:
         raise ValueError("grid.spacing must be positive")
@@ -288,14 +288,14 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--config-file", default=str(DEFAULT_CONFIG_PATH),
-        help="Path to rover_config.yaml  (default: ./config.yaml)",
+        help="Path to config.yaml  (default: ./config.yaml)",
     )
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    rover_client(args.connect, Path(args.config))
+    rover_client(args.connect, Path(args.config_file))
 
 
 if __name__ == "__main__":

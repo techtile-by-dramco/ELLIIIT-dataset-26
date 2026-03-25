@@ -3,7 +3,7 @@
 run_rover.py
 
 Standalone script to drive the XY plotter through a generated grid of positions.
-Reads all parameters from rover_config.yaml (same file used by zmqclient_rover.py).
+Reads all parameters from config.yaml (same file used by zmqclient_rover.py).
 
 Usage:
   python run_rover.py
@@ -34,16 +34,16 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
 
 def _validate_config(cfg: dict) -> None:
     if "serial_port" not in cfg:
-        raise ValueError("rover_config must contain 'serial_port'")
+        raise ValueError("config must contain 'serial_port'")
     if cfg.get("feed_rate", 0) <= 0:
         raise ValueError("feed_rate must be > 0")
 
     grid = cfg.get("grid")
     if not grid:
-        raise ValueError("rover_config must contain a 'grid' section")
+        raise ValueError("config must contain a 'grid' section")
     for key in ("x_start", "y_start", "x_end", "y_end", "spacing"):
         if key not in grid:
-            raise ValueError(f"rover_config.grid must contain '{key}'")
+            raise ValueError(f"config.grid must contain '{key}'")
     if float(grid["spacing"]) <= 0:
         raise ValueError("grid.spacing must be positive")
 
@@ -106,11 +106,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Drive the XY plotter through a grid")
     parser.add_argument(
         "--config-file", default=str(CONFIG_PATH),
-        help="Path to rover_config.yaml (default: ./config.yaml)",
+        help="Path to config.yaml (default: ./config.yaml)",
     )
     args = parser.parse_args()
 
-    cfg = load_config(Path(args.config))
+    cfg = load_config(Path(args.config_file))
 
     # Home once before any movement
     print("Homing plotter…")
