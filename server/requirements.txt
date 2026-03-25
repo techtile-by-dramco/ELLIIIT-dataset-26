@@ -1,0 +1,6 @@
+# Python dependencies required to run server/zmq_orchestrator.py
+# Position logging is mandatory in the current orchestrator flow.
+
+PyYAML
+pyzmq
+git+https://github.com/techtile-by-dramco/positioner
