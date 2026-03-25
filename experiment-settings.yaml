@@ -75,7 +75,7 @@ client_scripts:
     - '--channels 0' 
     - '--wave-ampl 0.8' 
     - '--gain 73' 
-    - '-w sine'
+    - '--waveform sine'
     - '--wave-freq 0'
     tiles: "T02"
   # - name: "rover/simulate_roverMove.py"
