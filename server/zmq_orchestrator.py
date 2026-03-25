@@ -538,11 +538,9 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
             "handshake.wait",
             expected_clients=sorted(startup_needed),
             deferred_clients=sorted(measurement_needed),
-            timeout_s=15.0,
         )
 
-        t0 = time.time()
-        while not stop["flag"] and not startup_needed.issubset(alive) and (time.time() - t0 < 15.0):
+        while not stop["flag"] and not startup_needed.issubset(alive):
             got = recv_one(timeout_ms=timeouts.poll_ms)
             if got is None:
                 continue
@@ -561,7 +559,7 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
         if not startup_needed.issubset(alive):
             log_event(
                 logging.WARNING,
-                "handshake.partial",
+                "handshake.interrupted",
                 connected=sorted(alive),
                 missing=sorted(startup_needed - alive),
             )
