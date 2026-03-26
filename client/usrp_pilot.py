@@ -90,6 +90,7 @@ begin_time = 2.0
 logger = logging.getLogger(__name__)
 
 logger.setLevel(logging.DEBUG)
+logger.propagate = False
 
 console = logging.StreamHandler()
 
@@ -101,12 +102,26 @@ formatter = LogFormatter(
 
 console.setFormatter(formatter)
 
-# Also log to file in the script directory and overwrite each run
-file_handler = logging.FileHandler(
-    os.path.join(os.path.dirname(__file__), "log.txt"), mode="w"
-)
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
+RUNTIME_OUTPUT_DIR = None
+log_file_handler = None
+
+
+def configure_file_logging(output_dir):
+    global RUNTIME_OUTPUT_DIR, log_file_handler
+
+    RUNTIME_OUTPUT_DIR = os.fspath(output_dir)
+    os.makedirs(RUNTIME_OUTPUT_DIR, exist_ok=True)
+
+    if log_file_handler is not None:
+        logger.removeHandler(log_file_handler)
+        log_file_handler.close()
+
+    log_file_handler = logging.FileHandler(
+        os.path.join(RUNTIME_OUTPUT_DIR, "usrp_pilot.log"),
+        mode="w",
+    )
+    log_file_handler.setFormatter(formatter)
+    logger.addHandler(log_file_handler)
 
 
 with open(os.path.join(os.path.dirname(__file__), "cal-settings.yml"), "r") as file:
@@ -325,7 +340,7 @@ def rx_ref(
             from scipy import stats
 
             lin_regr = stats.linregress(t, angle_unwrapped)
-            print(lin_regr.slope)
+            logger.debug("Linear regression slope CH%s: %s", ch, lin_regr.slope)
             phase_rad = angle_unwrapped - lin_regr.slope * t
             avg_phase = np.mean(phase_rad)
             var_angles[ch] = np.var(phase_rad)
@@ -546,13 +561,11 @@ def tune_usrp(usrp, freq, channels, at_time):
     wait_till_time(usrp, at_time)
 
     while not usrp.get_rx_sensor("lo_locked").to_bool():
-        print(".")
         time.sleep(0.01)
 
     logger.info("RX LO is locked")
 
     while not usrp.get_tx_sensor("lo_locked").to_bool():
-        print(".")
         time.sleep(0.01)
 
     logger.info("TX LO is locked")
@@ -1085,6 +1098,22 @@ def main():
     # Parse arguments
     args = parse_arguments()
 
+    try:
+        runtime_config = runtime_storage.resolve_runtime_output_dir(
+            args.config_file,
+            HOSTNAME,
+        )
+        configure_file_logging(runtime_config["host_output_dir"])
+        logger.info("Invocation args: %s", " ".join(sys.argv))
+        logger.info(
+            "Loaded experiment settings from %s",
+            runtime_config["settings_path"],
+        )
+        logger.info("Runtime output directory: %s", RUNTIME_OUTPUT_DIR)
+    except Exception as exc:
+        logger.error("Unable to initialize runtime storage: %s", exc)
+        return
+
     if args.config_file:
         sync_config = runtime_storage.resolve_rf_sync_endpoint(args.config_file)
         globals().update(
@@ -1104,7 +1133,7 @@ def main():
         )
 
     # Now tx_phase can be used globally
-    print(f"The phase value is set to: {tx_phase}")
+    logger.info("The phase value is set to: %s", tx_phase)
 
     _connect = True
     try:
@@ -1134,7 +1163,7 @@ def main():
 
             _ = tx_pilot(usrp, tx_streamer, quit_event, at_time=START_PILOT_TX)
 
-            print("My job is done")
+            logger.info("My job is done")
             send_usrp_done_mode(SERVER_IP)
 
     except KeyboardInterrupt:
