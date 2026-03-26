@@ -92,6 +92,14 @@ ENTITY_COLORS = {
     "rf": "\033[34m",
     "positioning": "\033[96m",
 }
+ENTITY_LABELS = {
+    "server": "ORCHESTRATOR",
+    "ref": "REF",
+    "rover": "ROVER",
+    "acoustic": "ACOUSTIC",
+    "rf": "RF",
+    "positioning": "POSITIONING",
+}
 USE_COLOR = sys.stderr.isatty()
 
 
@@ -132,10 +140,75 @@ def _fmt_log_value(value: Any) -> str:
 def _colorize_entity(value: str) -> str:
     if not USE_COLOR:
         return value
-    color = ENTITY_COLORS.get(value)
+    color = ENTITY_COLORS.get(value.lower())
     if color is None:
         return value
     return f"{color}{value}{ANSI_RESET}"
+
+
+def _colorize_entity_label(label: str, entity_key: str) -> str:
+    if not USE_COLOR:
+        return label
+    color = ENTITY_COLORS.get(entity_key)
+    if color is None:
+        return label
+    return f"{color}{label}{ANSI_RESET}"
+
+
+def _fmt_entity_tag(entity: str) -> str:
+    entity_key = str(entity).lower()
+    label = ENTITY_LABELS.get(entity_key, str(entity).upper())
+    return f"[{_colorize_entity_label(label, entity_key)}]"
+
+
+def log_protocol_overview() -> None:
+    lines = [
+        "Per cycle:",
+        f"  {_fmt_entity_tag('ref')} READY -----> {_fmt_entity_tag('server')}",
+        f"  {_fmt_entity_tag('server')} MOVE -----> {_fmt_entity_tag('rover')}",
+        f"  {_fmt_entity_tag('rover')} MOVE_DONE -----> {_fmt_entity_tag('server')}",
+        f"  {_fmt_entity_tag('server')} START_MEAS -----> {_fmt_entity_tag('acoustic')}",
+        f"  {_fmt_entity_tag('acoustic')} MEAS_DONE -----> {_fmt_entity_tag('server')}",
+        f"  {_fmt_entity_tag('server')} START_MEAS -----> {_fmt_entity_tag('rf')}",
+        f"      {_fmt_entity_tag('rf')} waits for ALIVE x N, publishes SYNC, waits for DONE x N",
+        f"  {_fmt_entity_tag('rf')} MEAS_DONE -----> {_fmt_entity_tag('server')}",
+    ]
+    log_banner("protocol.overview")
+    for line in lines:
+        LOGGER.info("%s", line)
+
+
+def _flow_action(msg: Dict[str, Any]) -> str:
+    msg_type = str(msg.get("type", "UNKNOWN")).upper()
+    status = msg.get("status")
+    if msg_type == "HELLO":
+        return "READY"
+    if status and status != "ok" and msg_type in {"MOVE_DONE", "MEAS_DONE"}:
+        return f"{msg_type}:{str(status).upper()}"
+    return msg_type
+
+
+def _flow_payload_fields(msg: Dict[str, Any], extra_fields: Dict[str, Any]) -> Dict[str, Any]:
+    payload = summarize_message(msg)
+    payload.pop("msg_type", None)
+    payload.pop("client_id", None)
+    return {
+        key: value
+        for key, value in {**payload, **extra_fields}.items()
+        if value is not None
+    }
+
+
+def log_flow(source: str, target: str, msg: Dict[str, Any], **fields: Any) -> None:
+    action = _flow_action(msg)
+    payload = " ".join(
+        f"{key}={_fmt_log_value(value)}"
+        for key, value in _flow_payload_fields(msg, fields).items()
+    )
+    message = f"{_fmt_entity_tag(source)} {action} -----> {_fmt_entity_tag(target)}"
+    if payload:
+        message = f"{message} {payload}"
+    LOGGER.info("[flow] %s", message)
 
 
 def log_event(level: int, event: str, **fields: Any) -> None:
@@ -181,11 +254,11 @@ def summarize_message(msg: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def log_send(target: str, msg: Dict[str, Any], **fields: Any) -> None:
-    log_event(logging.INFO, "send", target=target, **summarize_message(msg), **fields)
+    log_flow("server", target, msg, **fields)
 
 
 def log_recv(source: str, msg: Dict[str, Any], **fields: Any) -> None:
-    log_event(logging.INFO, "recv", source=source, **summarize_message(msg), **fields)
+    log_flow(source, "server", msg, **fields)
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "serverConfig.yaml"
@@ -533,6 +606,7 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
             cycles="∞" if cycles == 0 else cycles,
             meas_start=meas_start,
         )
+        log_protocol_overview()
         log_event(
             logging.INFO,
             "handshake.wait",
