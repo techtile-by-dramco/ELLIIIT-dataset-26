@@ -91,7 +91,7 @@ client_scripts:
   - name: "rover/ZMQclient_rover.py"
     args:
     - '--config'
-    - '/home/pi/ELLIIIT-dataset-26/rover/config.yaml'
+    - '/home/pi/ELLIIIT-dataset-26/client/rover/config.yaml'
     tiles: "R01"
 
 
