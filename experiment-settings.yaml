@@ -39,6 +39,7 @@ extra_packages:                     # list of extra packages to be installed on 
   - python3-numpy
   - python3-scipy
   - python3-zmq
+  - python3-pyserial
 
 # Legacy single-script fields kept for compatibility/documentation.
 # The active multi-script deployment uses `client_scripts` below.
