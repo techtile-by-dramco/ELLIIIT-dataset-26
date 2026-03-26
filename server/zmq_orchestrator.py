@@ -224,7 +224,7 @@ def _validate_server_config(cfg: Dict[str, Any]) -> None:
 @dataclass
 class Timeouts:
     ref_s:   float = 5.0
-    mov_s:   float = 30.0
+    mov_s:   float = 3000.0
     meas_s:  float = 60.0
     poll_ms: int   = 250
 
