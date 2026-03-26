@@ -43,21 +43,84 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import math
 import signal
+import socket
+import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import zmq
 import yaml
 
+CLIENT_ROOT = Path(__file__).resolve().parents[1]
+if str(CLIENT_ROOT) not in sys.path:
+    sys.path.insert(0, str(CLIENT_ROOT))
+
+import runtime_storage
 from rover import WorkArea, XYPlotter
 
 CLIENT_ID = "rover"
+HOSTNAME_RAW = socket.gethostname()
+HOSTNAME = HOSTNAME_RAW[4:] if len(HOSTNAME_RAW) > 4 else HOSTNAME_RAW
 
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "config.yaml"
 DEFAULT_EXPERIMENT_SETTINGS_PATH = Path(__file__).resolve().parents[2] / "experiment-settings.yaml"
+RUNTIME_OUTPUT_DIR = None
+log_file_handler = None
+
+
+class LogFormatter(logging.Formatter):
+    """Custom log formatter that prints timestamps with fractional seconds."""
+
+    @staticmethod
+    def pp_now():
+        now = datetime.now()
+        return "{:%H:%M}:{:05.2f}".format(now, now.second + now.microsecond / 1e6)
+
+    def formatTime(self, record, datefmt=None):
+        converter = self.converter(record.created)
+        if datefmt:
+            formatted_date = converter.strftime(datefmt)
+        else:
+            formatted_date = LogFormatter.pp_now()
+        return formatted_date
+
+
+class ColoredFormatter(LogFormatter):
+    """Console formatter with ANSI colors per level."""
+
+    COLORS = {
+        logging.DEBUG: "\033[36m",
+        logging.INFO: "\033[32m",
+        logging.WARNING: "\033[33m",
+        logging.ERROR: "\033[31m",
+        logging.CRITICAL: "\033[35m",
+    }
+    RESET = "\033[0m"
+
+    def format(self, record):
+        color = self.COLORS.get(record.levelno, "")
+        reset = self.RESET if color else ""
+        record.levelname = f"{color}{record.levelname}{reset}"
+        return super().format(record)
+
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+logger.propagate = False
+
+formatter = LogFormatter(
+    fmt="[%(asctime)s] [%(levelname)s] (%(threadName)-10s) %(message)s"
+)
+
+if not logger.handlers:
+    console = logging.StreamHandler()
+    console.setFormatter(ColoredFormatter(fmt=formatter._fmt))
+    logger.addHandler(console)
 
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -95,6 +158,24 @@ def resolve_orchestrator_connect(connect: Optional[str], settings_path: Path) ->
     if "://" in str(host):
         return str(host)
     return f"tcp://{host}:{port}"
+
+
+def configure_file_logging(output_dir):
+    global RUNTIME_OUTPUT_DIR, log_file_handler
+
+    RUNTIME_OUTPUT_DIR = Path(output_dir)
+    RUNTIME_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    if log_file_handler is not None:
+        logger.removeHandler(log_file_handler)
+        log_file_handler.close()
+
+    log_file_handler = logging.FileHandler(
+        RUNTIME_OUTPUT_DIR / f"{Path(__file__).stem}.log",
+        mode="w",
+    )
+    log_file_handler.setFormatter(formatter)
+    logger.addHandler(log_file_handler)
 
 def load_config(path: Path) -> Dict[str, Any]:
     if not path.exists():
@@ -176,13 +257,20 @@ def run_rover(
 
     clamped_x, clamped_y = area.clamp(x, y)
     if (clamped_x, clamped_y) != (x, y):
-        print(
+        logger.warning(
             f"[{CLIENT_ID}] WARNING: target ({x:.3f}, {y:.3f}) outside work area "
             f"– clamped to ({clamped_x:.3f}, {clamped_y:.3f})"
         )
         x, y = clamped_x, clamped_y
 
-    print(f"[{CLIENT_ID}] moving to X={x:.3f}  Y={y:.3f}  feed={feed_rate}  port={port}")
+    logger.info(
+        "[%s] moving to X=%.3f Y=%.3f feed=%s port=%s",
+        CLIENT_ID,
+        x,
+        y,
+        feed_rate,
+        port,
+    )
     t_start = time.time()
 
     with XYPlotter(port, baudrate=baudrate) as plotter:
@@ -192,18 +280,18 @@ def run_rover(
         if home_after_move:
             plotter.move_to_origin()
 
-    print(f"[{CLIENT_ID}] move complete in {round(time.time() - t_start, 3)} s")
+    logger.info("[%s] move complete in %.3f s", CLIENT_ID, time.time() - t_start)
 
 def rover_client(connect: str, config_path: Path) -> None:
     cfg: Dict[str, Any]  = load_config(config_path)
     cycle_positions: bool = cfg.get("cycle_positions", True)
 
     positions = build_grid(cfg)
-    print(f"[{CLIENT_ID}] loaded config from {config_path}")
-    print(f"[{CLIENT_ID}] grid has {len(positions)} node(s)")
+    logger.info("[%s] loaded config from %s", CLIENT_ID, config_path)
+    logger.info("[%s] grid has %d node(s)", CLIENT_ID, len(positions))
     if cfg.get("verbose"):
         for i, (x, y) in enumerate(positions):
-            print(f"  [{i:4d}]  X={x:.3f}  Y={y:.3f}")
+            logger.info("  [%4d] X=%.3f Y=%.3f", i, x, y)
 
     ctx  = zmq.Context.instance()
     sock = ctx.socket(zmq.DEALER)
@@ -232,7 +320,7 @@ def rover_client(connect: str, config_path: Path) -> None:
         return jload(sock.recv())
 
     send({"type": "HELLO", "id": CLIENT_ID, "ts": now_ms()})
-    print(f"[{CLIENT_ID}] connected to {connect}. Waiting for commands…")
+    logger.info("[%s] connected to %s. Waiting for commands...", CLIENT_ID, connect)
 
     while not stop["flag"]:
         msg = recv(timeout_ms=1000)
@@ -252,7 +340,7 @@ def rover_client(connect: str, config_path: Path) -> None:
             else:
                 pos_index = move_counter - 1
                 if pos_index >= len(positions):
-                    print(
+                    logger.error(
                         f"[{CLIENT_ID}][exp {experiment_id}][meas {meas_id}] "
                         f"ERROR: grid exhausted after {len(positions)} position(s)."
                     )
@@ -270,7 +358,7 @@ def rover_client(connect: str, config_path: Path) -> None:
 
             x, y = positions[pos_index]
 
-            print(
+            logger.info(
                 f"[{CLIENT_ID}][exp {experiment_id}][meas {meas_id}] "
                 f"MOVE received  → grid[{pos_index}] X={x:.3f}  Y={y:.3f}"
             )
@@ -287,7 +375,12 @@ def rover_client(connect: str, config_path: Path) -> None:
                     "status":        "ok",
                     "ts":            now_ms(),
                 }
-                print(f"[{CLIENT_ID}][exp {experiment_id}][meas {meas_id}] MOVE_DONE")
+                logger.info(
+                    "[%s][exp %s][meas %s] MOVE_DONE",
+                    CLIENT_ID,
+                    experiment_id,
+                    meas_id,
+                )
 
             except Exception as exc:
                 response = {
@@ -300,7 +393,13 @@ def rover_client(connect: str, config_path: Path) -> None:
                     "error":         str(exc),
                     "ts":            now_ms(),
                 }
-                print(f"[{CLIENT_ID}][exp {experiment_id}][meas {meas_id}] ERROR: {exc}")
+                logger.error(
+                    "[%s][exp %s][meas %s] ERROR: %s",
+                    CLIENT_ID,
+                    experiment_id,
+                    meas_id,
+                    exc,
+                )
 
             send(response)
 
@@ -308,7 +407,11 @@ def rover_client(connect: str, config_path: Path) -> None:
             send({"type": "PONG", "id": CLIENT_ID, "ts": now_ms()})
 
         else:
-            print(f"[{CLIENT_ID}] unexpected message type '{mtype}' — sending ERROR")
+            logger.warning(
+                "[%s] unexpected message type '%s' - sending ERROR",
+                CLIENT_ID,
+                mtype,
+            )
             send({
                 "type":          "ERROR",
                 "experiment_id": experiment_id,
@@ -319,7 +422,7 @@ def rover_client(connect: str, config_path: Path) -> None:
                 "ts":            now_ms(),
             })
 
-    print(f"[{CLIENT_ID}] shutting down.")
+    logger.info("[%s] shutting down.", CLIENT_ID)
     sock.close()
     ctx.term()
 
@@ -344,11 +447,32 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    try:
+        runtime_config = runtime_storage.resolve_runtime_output_dir(
+            args.experiment_settings,
+            HOSTNAME,
+        )
+        configure_file_logging(runtime_config["host_output_dir"])
+        logger.info("Invocation args: %s", " ".join(sys.argv))
+        logger.info(
+            "Loaded experiment settings from %s",
+            runtime_config["settings_path"],
+        )
+        logger.info("Runtime output directory: %s", RUNTIME_OUTPUT_DIR)
+    except Exception as exc:
+        logger.error("Unable to initialize runtime storage: %s", exc)
+        return
+
     connect = resolve_orchestrator_connect(
         args.connect,
         Path(args.experiment_settings),
     )
-    rover_client(connect, Path(args.config_file))
+    logger.info("Orchestrator endpoint: %s", connect)
+    try:
+        rover_client(connect, Path(args.config_file))
+    except Exception:
+        logger.exception("rover client failed")
+        raise
 
 
 if __name__ == "__main__":
