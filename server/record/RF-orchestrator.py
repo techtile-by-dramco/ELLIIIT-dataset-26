@@ -52,6 +52,7 @@ class RFSyncRuntime:
     done_poller: zmq.Poller
     log_file: Optional[TextIO]
     log_path: Optional[Path]
+    buffered_alive: list[str]
 
 
 def now_ms() -> int:
@@ -166,6 +167,7 @@ def init_rf_sync_runtime(ctx: zmq.Context, config: RFSyncConfig) -> RFSyncRuntim
         done_poller=done_poller,
         log_file=None,
         log_path=None,
+        buffered_alive=[],
     )
 
 
@@ -207,8 +209,9 @@ def _wait_for_quorum(
     expected: int,
     timeout_s: float,
     phase: str,
+    initial_messages: Optional[list[str]] = None,
 ) -> list[str]:
-    messages: list[str] = []
+    messages: list[str] = list(initial_messages or [])
     deadline = time.monotonic() + timeout_s
 
     while len(messages) < expected:
@@ -230,6 +233,30 @@ def _wait_for_quorum(
         socket.send_string("ACK")
 
     return messages
+
+
+def _drain_idle_rf_sync_requests(runtime: RFSyncRuntime) -> None:
+    while True:
+        drained = False
+
+        if runtime.alive_poller.poll(0):
+            message = runtime.alive_socket.recv_string()
+            runtime.buffered_alive.append(message)
+            print(
+                f"[rf-sync][ALIVE][buffered] {message} "
+                f"({len(runtime.buffered_alive)}/{runtime.config.num_subscribers})"
+            )
+            runtime.alive_socket.send_string("ACK")
+            drained = True
+
+        if runtime.done_poller.poll(0):
+            message = runtime.done_socket.recv_string()
+            print(f"[rf-sync][DONE][idle] dropping unexpected DONE from {message}")
+            runtime.done_socket.send_string("ACK")
+            drained = True
+
+        if not drained:
+            return
 
 
 def _append_measurement_log(
@@ -261,14 +288,22 @@ def run_rf_measurement(
     expected = runtime.config.num_subscribers
     timeout_s = runtime.config.wait_timeout_s
     sync_experiment_id = _ensure_experiment_context(runtime, experiment_id)
+    buffered_alive = runtime.buffered_alive
+    runtime.buffered_alive = []
 
     print(f"[rf-sync][exp {experiment_id}][meas {meas_id}] waiting for ALIVE quorum...")
+    if buffered_alive:
+        print(
+            f"[rf-sync][exp {experiment_id}][meas {meas_id}] "
+            f"using {len(buffered_alive)} buffered ALIVE message(s)"
+        )
     alive_messages = _wait_for_quorum(
         runtime.alive_socket,
         runtime.alive_poller,
         expected=expected,
         timeout_s=timeout_s,
         phase="ALIVE",
+        initial_messages=buffered_alive,
     )
 
     if runtime.config.pre_sync_delay_s > 0:
@@ -312,8 +347,13 @@ def rf_client(connect: str, client_id: str, settings_path: Path) -> None:
     sock.setsockopt(zmq.IDENTITY, client_id.encode("utf-8"))
     sock.connect(connect)
 
+    config = load_rf_sync_config(settings_path)
+    runtime = init_rf_sync_runtime(ctx, config)
+
     poller = zmq.Poller()
     poller.register(sock, zmq.POLLIN)
+    poller.register(runtime.alive_socket, zmq.POLLIN)
+    poller.register(runtime.done_socket, zmq.POLLIN)
 
     stop = {"flag": False}
 
@@ -325,23 +365,18 @@ def rf_client(connect: str, client_id: str, settings_path: Path) -> None:
     def send(msg: Dict[str, Any]) -> None:
         sock.send(jdump(msg))
 
-    def recv(timeout_ms: int = 1000) -> Optional[Dict[str, Any]]:
-        events = dict(poller.poll(timeout_ms))
-        if sock not in events:
-            return None
-        return jload(sock.recv())
-
-    config = load_rf_sync_config(settings_path)
-    runtime = init_rf_sync_runtime(ctx, config)
-
     send({"type": "HELLO", "id": client_id, "ts": now_ms()})
     print(f"[{client_id}] connected to {connect}. Waiting for commands...")
 
     try:
         while not stop["flag"]:
-            msg = recv(timeout_ms=1000)
-            if msg is None:
+            events = dict(poller.poll(1000))
+            if runtime.alive_socket in events or runtime.done_socket in events:
+                _drain_idle_rf_sync_requests(runtime)
+
+            if sock not in events:
                 continue
+            msg = jload(sock.recv())
 
             mtype = msg.get("type")
             experiment_id = msg.get("experiment_id")
@@ -355,6 +390,7 @@ def rf_client(connect: str, client_id: str, settings_path: Path) -> None:
                 )
 
                 try:
+                    _drain_idle_rf_sync_requests(runtime)
                     summary = run_rf_measurement(
                         experiment_id=experiment_id,
                         cycle_id=cycle_id,
