@@ -3,7 +3,7 @@ bind: "tcp://*:5555"
 cycles: 0
 meas_start: 1
 timeouts:
-  ref_s: 5.0
-  mov_s: 30.0
-  meas_s: 60.0
-  poll_ms: 250
+  ref_s: 5.0       # deprecated, ignored by zmq_orchestrator.py
+  mov_s: 30.0      # deprecated, ignored by zmq_orchestrator.py
+  meas_s: 60.0     # deprecated, ignored by zmq_orchestrator.py
+  poll_ms: 250     # poll interval only, not an operation timeout

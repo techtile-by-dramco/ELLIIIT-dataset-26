@@ -46,10 +46,10 @@ bind: "tcp://*:5555"
 cycles: 0          # 0 = run forever
 meas_start: 1
 timeouts:
-  ref_s: 5.0
-  mov_s: 30.0
-  meas_s: 60.0
-  poll_ms: 250
+  ref_s: 5.0       # deprecated, ignored
+  mov_s: 30.0      # deprecated, ignored
+  meas_s: 60.0     # deprecated, ignored
+  poll_ms: 250     # poll interval only, not an operation timeout
 """
 
 from __future__ import annotations
@@ -542,18 +542,15 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
         msg = jload(parts[-1])
         return cid, msg
 
-    def ensure_client_active(client_id: str, *, timeout_s: float, label: str) -> None:
-        deadline = time.time() + timeout_s
-
+    def ensure_client_active(client_id: str, *, label: str) -> None:
         if client_id not in alive:
             log_event(
                 logging.INFO,
                 "healthcheck.wait_for_hello",
                 client=client_id,
                 label=label,
-                timeout_s=timeout_s,
             )
-            while not stop["flag"] and time.time() < deadline and client_id not in alive:
+            while not stop["flag"] and client_id not in alive:
                 got = recv_one(timeout_ms=timeouts.poll_ms)
                 if got is None:
                     continue
@@ -583,8 +580,7 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
             if client_id not in alive:
                 raise_if_stopping()
                 raise RuntimeError(
-                    f"Mandatory client '{client_id}' did not announce readiness before {label}. "
-                    "Ensure client/run-ref.py is transmitting and connected to the orchestrator."
+                    f"Mandatory client '{client_id}' readiness wait exited unexpectedly during {label}."
                 )
 
         ping_id = f"{client_id}-{now_ms()}"
@@ -602,11 +598,10 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
             "healthcheck.start",
             client=client_id,
             label=label,
-            timeout_s=timeout_s,
             ping_id=ping_id,
         )
 
-        while not stop["flag"] and time.time() < deadline:
+        while not stop["flag"]:
             got = recv_one(timeout_ms=timeouts.poll_ms)
             if got is None:
                 continue
@@ -640,7 +635,7 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
 
         raise_if_stopping()
         raise RuntimeError(
-            f"Timeout waiting for mandatory client '{client_id}' during {label}."
+            f"Mandatory client '{client_id}' healthcheck wait exited unexpectedly during {label}."
         )
 
     try:
@@ -723,7 +718,6 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
 
             ensure_client_active(
                 "ref",
-                timeout_s=timeouts.ref_s,
                 label=f"pre-cycle meas {meas_id}",
             )
 
@@ -744,13 +738,11 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                 cycle_id=cycle_id,
                 meas_id=meas_id,
                 target="rover",
-                timeout_s=timeouts.mov_s,
             )
 
             got_move_done = False
             move_status = "unknown"
-            deadline = time.time() + timeouts.mov_s
-            while not stop["flag"] and time.time() < deadline and not got_move_done:
+            while not stop["flag"] and not got_move_done:
                 got = recv_one(timeout_ms=timeouts.poll_ms)
                 if got is None:
                     continue
@@ -802,20 +794,9 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                 shutdown_reason = current_shutdown_reason("shutdown during move phase")
                 break
             if not got_move_done:
-                shutdown_reason = (
-                    f"timeout waiting for MOVE_DONE during cycle={cycle_id} meas={meas_id}"
+                raise RuntimeError(
+                    f"Unexpected exit while waiting for MOVE_DONE during cycle={cycle_id} meas={meas_id}."
                 )
-                log_event(
-                    logging.ERROR,
-                    "phase.timeout",
-                    phase="move",
-                    experiment_id=experiment_id,
-                    cycle_id=cycle_id,
-                    meas_id=meas_id,
-                    expected="MOVE_DONE",
-                    timeout_s=timeouts.mov_s,
-                )
-                break
 
             capture_and_log_position(
                 positioning_runtime,
@@ -842,12 +823,10 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                 cycle_id=cycle_id,
                 meas_id=meas_id,
                 target="acoustic",
-                timeout_s=timeouts.meas_s,
             )
 
             got_meas_done = False
-            deadline = time.time() + timeouts.meas_s
-            while not stop["flag"] and time.time() < deadline and not got_meas_done:
+            while not stop["flag"] and not got_meas_done:
                 got = recv_one(timeout_ms=timeouts.poll_ms)
                 if got is None:
                     continue
@@ -899,21 +878,10 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                 shutdown_reason = current_shutdown_reason("shutdown during acoustic phase")
                 break
             if not got_meas_done:
-                shutdown_reason = (
-                    f"timeout waiting for MEAS_DONE during acoustic phase "
-                    f"cycle={cycle_id} meas={meas_id}"
+                raise RuntimeError(
+                    "Unexpected exit while waiting for acoustic MEAS_DONE during "
+                    f"cycle={cycle_id} meas={meas_id}."
                 )
-                log_event(
-                    logging.ERROR,
-                    "phase.timeout",
-                    phase="acoustic",
-                    experiment_id=experiment_id,
-                    cycle_id=cycle_id,
-                    meas_id=meas_id,
-                    expected="MEAS_DONE",
-                    timeout_s=timeouts.meas_s,
-                )
-                break
 
             # -------------------------------------------------------------- RF MEAS
             start_rf_msg: Dict[str, Any] = {
@@ -932,12 +900,10 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                 cycle_id=cycle_id,
                 meas_id=meas_id,
                 target="rf",
-                timeout_s=timeouts.meas_s,
             )
 
             got_rf_done = False
-            deadline = time.time() + timeouts.meas_s
-            while not stop["flag"] and time.time() < deadline and not got_rf_done:
+            while not stop["flag"] and not got_rf_done:
                 got = recv_one(timeout_ms=timeouts.poll_ms)
                 if got is None:
                     continue
@@ -989,21 +955,10 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                 shutdown_reason = current_shutdown_reason("shutdown during rf phase")
                 break
             if not got_rf_done:
-                shutdown_reason = (
-                    f"timeout waiting for MEAS_DONE during rf phase "
-                    f"cycle={cycle_id} meas={meas_id}"
+                raise RuntimeError(
+                    "Unexpected exit while waiting for rf MEAS_DONE during "
+                    f"cycle={cycle_id} meas={meas_id}."
                 )
-                log_event(
-                    logging.ERROR,
-                    "phase.timeout",
-                    phase="rf",
-                    experiment_id=experiment_id,
-                    cycle_id=cycle_id,
-                    meas_id=meas_id,
-                    expected="MEAS_DONE",
-                    timeout_s=timeouts.meas_s,
-                )
-                break
 
             log_banner(
                 "cycle.complete",
