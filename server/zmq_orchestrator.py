@@ -501,6 +501,7 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
     startup_needed = {"rover", "acoustic", "rf"}
     measurement_needed = {"ref"}
     stop   = {"flag": False, "signal": None}
+    shutdown_reason = "unknown"
     positioning_runtime = PositioningRuntime(enabled=False)
 
     def _request_shutdown(sig: int, _frame: Any) -> None:
@@ -519,6 +520,12 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
         if stop["flag"]:
             signal_name = stop["signal"] or "shutdown"
             raise ShutdownRequested(f"Shutdown requested via {signal_name}.")
+
+    def current_shutdown_reason(context: str = "shutdown requested") -> str:
+        signal_name = stop["signal"]
+        if signal_name:
+            return f"{context} via {signal_name}"
+        return context
 
     def send_to(client_id: str, msg: Dict[str, Any]) -> None:
         sock.send_multipart([client_id.encode("utf-8"), jdump(msg)])
@@ -692,6 +699,7 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
 
     try:
         if stop["flag"]:
+            shutdown_reason = current_shutdown_reason("startup interrupted")
             return
 
         positioning_runtime = init_positioning_runtime(
@@ -702,6 +710,7 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
         while not stop["flag"]:
             cycle_id += 1
             if cycles > 0 and cycle_id > cycles:
+                shutdown_reason = f"completed configured cycles={cycles}"
                 break
 
             meas_id += 1
@@ -790,8 +799,12 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                     )
 
             if stop["flag"]:
+                shutdown_reason = current_shutdown_reason("shutdown during move phase")
                 break
             if not got_move_done:
+                shutdown_reason = (
+                    f"timeout waiting for MOVE_DONE during cycle={cycle_id} meas={meas_id}"
+                )
                 log_event(
                     logging.ERROR,
                     "phase.timeout",
@@ -883,8 +896,13 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                     )
 
             if stop["flag"]:
+                shutdown_reason = current_shutdown_reason("shutdown during acoustic phase")
                 break
             if not got_meas_done:
+                shutdown_reason = (
+                    f"timeout waiting for MEAS_DONE during acoustic phase "
+                    f"cycle={cycle_id} meas={meas_id}"
+                )
                 log_event(
                     logging.ERROR,
                     "phase.timeout",
@@ -968,8 +986,13 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                     )
 
             if stop["flag"]:
+                shutdown_reason = current_shutdown_reason("shutdown during rf phase")
                 break
             if not got_rf_done:
+                shutdown_reason = (
+                    f"timeout waiting for MEAS_DONE during rf phase "
+                    f"cycle={cycle_id} meas={meas_id}"
+                )
                 log_event(
                     logging.ERROR,
                     "phase.timeout",
@@ -990,9 +1013,15 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
             )
 
     except ShutdownRequested as exc:
+        shutdown_reason = str(exc)
         log_event(logging.INFO, "server.stop_requested", reason=str(exc))
+    except Exception as exc:
+        shutdown_reason = f"error: {exc}"
+        raise
     finally:
-        log_banner("server.shutdown", experiment_id=experiment_id)
+        if shutdown_reason == "unknown":
+            shutdown_reason = current_shutdown_reason("shutdown requested")
+        log_banner("server.shutdown", experiment_id=experiment_id, reason=shutdown_reason)
         close_positioning_runtime(positioning_runtime)
         sock.close()
         ctx.term()
