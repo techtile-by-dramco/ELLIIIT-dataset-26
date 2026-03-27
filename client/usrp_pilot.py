@@ -390,7 +390,6 @@ def wait_till_go_from_server(ip, _connect=True):
 
     alive_socket = context.socket(zmq.REQ)
     alive_socket.setsockopt(zmq.LINGER, 0)
-    alive_socket.setsockopt(zmq.RCVTIMEO, 5000)
 
     sync_port = str(globals().get("SYNC_PORT", "5557"))
     alive_port = str(globals().get("ALIVE_PORT", "5558"))
@@ -402,12 +401,7 @@ def wait_till_go_from_server(ip, _connect=True):
 
     logger.debug("Sending ALIVE")
     alive_socket.send_string("PILOT")
-    try:
-        alive_reply = alive_socket.recv_string()
-    except zmq.Again as exc:
-        raise RuntimeError(
-            f"No ALIVE ACK from RF sync server {ip}:{alive_port} within 5s."
-        ) from exc
+    alive_reply = alive_socket.recv_string()
     logger.debug("ALIVE acknowledged: %s", alive_reply)
     # Receives a string format message
     logger.debug("Waiting on SYNC from server %s.", ip)
@@ -1078,15 +1072,11 @@ def send_usrp_done_mode(ip):
     done_port = str(globals().get("DONE_PORT", globals().get("DATA_PORT", "5559")))
     done_mode_socket = context.socket(zmq.REQ)
     done_mode_socket.setsockopt(zmq.LINGER, 0)
-    done_mode_socket.setsockopt(zmq.RCVTIMEO, 5000)
     done_mode_socket.connect(f"tcp://{ip}:{done_port}")
     logger.debug("USRP IN DONE MODE")
     done_mode_socket.send_string(HOSTNAME)
-    try:
-        done_reply = done_mode_socket.recv_string()
-        logger.debug("DONE acknowledged: %s", done_reply)
-    except zmq.Again:
-        logger.warning("No DONE ACK from RF sync server %s:%s within 5s.", ip, done_port)
+    done_reply = done_mode_socket.recv_string()
+    logger.debug("DONE acknowledged: %s", done_reply)
     done_mode_socket.close()
 
     
