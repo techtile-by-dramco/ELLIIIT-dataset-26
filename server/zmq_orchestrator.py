@@ -275,6 +275,7 @@ POSITION_LOG_FIELDS = [
     "x",
     "y",
     "z",
+    "position",
     "rotation_matrix_json",
     "error",
 ]
@@ -323,6 +324,12 @@ class PositioningRuntime:
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def format_position_value(x: Any, y: Any, z: Any) -> str:
+    if all(value in ("", None) for value in (x, y, z)):
+        return ""
+    return json.dumps([x, y, z], separators=(",", ":"), ensure_ascii=False)
 
 
 def load_experiment_settings(path: Path) -> Dict[str, Any]:
@@ -413,6 +420,7 @@ def capture_and_log_position(
         "x": "",
         "y": "",
         "z": "",
+        "position": "",
         "rotation_matrix_json": "",
         "error": "",
     }
@@ -436,6 +444,8 @@ def capture_and_log_position(
         row["position_status"] = "error"
         row["error"] = str(exc)
 
+    row["position"] = format_position_value(row["x"], row["y"], row["z"])
+
     runtime.log_writer.writerow(row)
     runtime.log_file.flush()
 
@@ -447,6 +457,7 @@ def capture_and_log_position(
         meas_id=meas_id,
         move_status=move_status,
         position_status=row["position_status"],
+        position=row["position"] or None,
         x=row["x"],
         y=row["y"],
         z=row["z"],
