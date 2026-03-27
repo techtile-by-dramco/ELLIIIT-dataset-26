@@ -322,6 +322,10 @@ class PositioningRuntime:
     log_path: Optional[Path] = None
 
 
+class ShutdownRequested(Exception):
+    pass
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -479,7 +483,16 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
     ctx = zmq.Context.instance()
     sock = ctx.socket(zmq.ROUTER)
     sock.linger = 0
-    sock.bind(bind)
+    try:
+        sock.bind(bind)
+    except zmq.ZMQError as exc:
+        if getattr(exc, "errno", None) == zmq.EADDRINUSE:
+            raise RuntimeError(
+                f"Unable to bind {bind}: address already in use. "
+                "A previous orchestrator may still be running or suspended via Ctrl+Z. "
+                "Resume it with `fg` and stop it cleanly, or terminate it before retrying."
+            ) from exc
+        raise
 
     poller = zmq.Poller()
     poller.register(sock, zmq.POLLIN)
@@ -487,13 +500,25 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
     alive: Set[str] = set()
     startup_needed = {"rover", "acoustic", "rf"}
     measurement_needed = {"ref"}
-    stop   = {"flag": False}
+    stop   = {"flag": False, "signal": None}
     positioning_runtime = PositioningRuntime(enabled=False)
 
-    def _sigint(_sig, _frame):
+    def _request_shutdown(sig: int, _frame: Any) -> None:
+        signal_name = signal.Signals(sig).name
+        if not stop["flag"]:
+            stop["signal"] = signal_name
+            log_event(logging.INFO, "signal.received", signal=signal_name, action="shutdown")
         stop["flag"] = True
 
-    signal.signal(signal.SIGINT, _sigint)
+    signal.signal(signal.SIGINT, _request_shutdown)
+    signal.signal(signal.SIGTERM, _request_shutdown)
+    if hasattr(signal, "SIGTSTP"):
+        signal.signal(signal.SIGTSTP, _request_shutdown)
+
+    def raise_if_stopping() -> None:
+        if stop["flag"]:
+            signal_name = stop["signal"] or "shutdown"
+            raise ShutdownRequested(f"Shutdown requested via {signal_name}.")
 
     def send_to(client_id: str, msg: Dict[str, Any]) -> None:
         sock.send_multipart([client_id.encode("utf-8"), jdump(msg)])
@@ -549,6 +574,7 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                 )
 
             if client_id not in alive:
+                raise_if_stopping()
                 raise RuntimeError(
                     f"Mandatory client '{client_id}' did not announce readiness before {label}. "
                     "Ensure client/run-ref.py is transmitting and connected to the orchestrator."
@@ -605,6 +631,7 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                     ping_id=mid_ping,
                 )
 
+        raise_if_stopping()
         raise RuntimeError(
             f"Timeout waiting for mandatory client '{client_id}' during {label}."
         )
@@ -664,6 +691,9 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
     meas_id  = meas_start - 1
 
     try:
+        if stop["flag"]:
+            return
+
         positioning_runtime = init_positioning_runtime(
             experiment_settings_path,
             experiment_id,
@@ -759,6 +789,8 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                         meas_id=mid_meas,
                     )
 
+            if stop["flag"]:
+                break
             if not got_move_done:
                 log_event(
                     logging.ERROR,
@@ -850,6 +882,8 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                         meas_id=mid_meas,
                     )
 
+            if stop["flag"]:
+                break
             if not got_meas_done:
                 log_event(
                     logging.ERROR,
@@ -933,6 +967,8 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                         meas_id=mid_meas,
                     )
 
+            if stop["flag"]:
+                break
             if not got_rf_done:
                 log_event(
                     logging.ERROR,
@@ -953,6 +989,8 @@ def server_main(config_path: Path, experiment_settings_path: Path) -> None:
                 meas_id=meas_id,
             )
 
+    except ShutdownRequested as exc:
+        log_event(logging.INFO, "server.stop_requested", reason=str(exc))
     finally:
         log_banner("server.shutdown", experiment_id=experiment_id)
         close_positioning_runtime(positioning_runtime)
