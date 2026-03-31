@@ -28,7 +28,11 @@ config.yaml layout:
     y_start: 300.0
     x_end:   900.0
     y_end:   900.0
-    spacing: 150.0
+    sweeps:        5       # total number of sweeps to generate
+    start_spacing: 120.0   # spacing (mm) used for sweep 1
+    decay:         0.75    # multiply spacing by this every odd sweep (>=3)
+    min_spacing:   20.0    # floor for spacing
+    start_sweep:   1       # resume from this sweep number (default 1)
   cycle_positions: true
   home_after_move: false
   verbose: false
@@ -53,6 +57,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import zmq
 import yaml
 
@@ -121,6 +126,12 @@ if not logger.handlers:
     console = logging.StreamHandler()
     console.setFormatter(ColoredFormatter(fmt=formatter._fmt))
     logger.addHandler(console)
+    
+    # --- Automatically save absolutely everything to a local log file ---
+    local_file = logging.FileHandler("zmqclient_rover.log", mode="a")
+    local_file.setFormatter(formatter)
+    logger.addHandler(local_file)
+    # -------------------------------------------------------------------------
 
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -194,48 +205,154 @@ def _validate_config(cfg: Dict[str, Any]) -> None:
     if not grid:
         raise ValueError("config must contain a 'grid' section")
 
-    for key in ("x_start", "y_start", "x_end", "y_end", "spacing"):
+    for key in ("x_start", "y_start", "x_end", "y_end"):
         if key not in grid:
             raise ValueError(f"config.grid must contain '{key}'")
 
-    if float(grid["spacing"]) <= 0:
+    # At least one of the sweep or legacy spacing keys must be present.
+    has_sweep  = "sweeps" in grid
+    has_legacy = "spacing" in grid
+    if not has_sweep and not has_legacy:
+        raise ValueError(
+            "config.grid must contain either 'sweeps' (sweep mode) "
+            "or 'spacing' (legacy grid mode)"
+        )
+
+    if has_sweep and int(grid["sweeps"]) < 1:
+        raise ValueError("grid.sweeps must be >= 1")
+
+    if has_legacy and float(grid["spacing"]) <= 0:
         raise ValueError("grid.spacing must be positive")
 
 
-def build_grid(cfg: Dict[str, Any]) -> List[Tuple[float, float]]:
+def _compute_spacing_for_sweep(
+    start_spacing: float,
+    min_spacing: float,
+    decay: float,
+    target_sweep: int,
+) -> float:
+    """Return the spacing that would be active at *target_sweep*."""
+    spacing = start_spacing
+    for s in range(1, target_sweep):
+        if s > 1 and s % 2 == 1:
+            spacing = max(min_spacing, spacing * decay)
+    return spacing
+
+
+def _generate_sweep_points(
+    sweeps: int,
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+    start_sweep: int = 1,
+    start_spacing: float = 120.0,
+    decay: float = 0.75,
+    min_spacing: float = 20.0,
+) -> list[tuple[int, list[tuple[float, float]]]]:
     """
-    Build a flat list of (x, y) grid nodes in serpentine order.
+    Generate all sweep paths without touching hardware.
 
-    Rows run along Y; columns run along X.
-    Even rows (0-indexed) go left→right; odd rows go right→left.
+    Returns a list of (sweep_number, [(x, y), ...]) tuples.
+
+    Sweep strategy
+    --------------
+    - Even sweeps  → vertical scan lines (constant X, varying Y).
+    - Odd sweeps   → horizontal scan lines (constant Y, varying X).
+    - Spacing decays by *decay* on every odd sweep >= 3.
+    - A half-spacing offset is applied to X lines on even sweeps and to
+      Y lines on sweeps divisible by 3, spreading coverage across runs.
+    - Each sweep starts at the area centre so the plotter approaches from
+      a known position.
+    - Lines are traversed in serpentine order to minimise travel distance.
     """
-    grid   = cfg["grid"]
-    x0     = float(grid["x_start"])
-    y0     = float(grid["y_start"])
-    x1     = float(grid["x_end"])
-    y1     = float(grid["y_end"])
-    step   = float(grid["spacing"])
+    all_sweeps: list[tuple[int, list[tuple[float, float]]]] = []
+    spacing = _compute_spacing_for_sweep(start_spacing, min_spacing, decay, start_sweep)
+    center  = ((x_min + x_max) / 2.0, (y_min + y_max) / 2.0)
 
-    # Build axis arrays (inclusive of end points within half a step tolerance)
-    def axis(start: float, end: float) -> List[float]:
-        lo, hi = (start, end) if start <= end else (end, start)
-        values: List[float] = []
-        v = lo
-        while v <= hi + step * 1e-6:
-            values.append(round(v, 6))
-            v += step
-        return values if start <= end else list(reversed(values))
+    sweep_number = start_sweep
+    for _ in range(sweeps):
+        # Decay spacing on every odd sweep after the first.
+        if sweep_number > 1 and sweep_number % 2 == 1 and sweep_number != start_sweep:
+            spacing = max(min_spacing, spacing * decay)
 
-    xs = axis(x0, x1)
-    ys = axis(y0, y1)
+        x_offset = (spacing / 2.0) if sweep_number % 2 == 0 else 0.0
+        y_offset = (spacing / 2.0) if sweep_number % 3 == 0 else 0.0
 
-    points: List[Tuple[float, float]] = []
-    for row_idx, y in enumerate(ys):
-        row_xs = xs if row_idx % 2 == 0 else list(reversed(xs))
-        for x in row_xs:
-            points.append((x, y))
+        x_lines = np.arange(x_min + x_offset, x_max, spacing)
+        y_lines = np.arange(y_min + y_offset, y_max, spacing)
 
-    return points
+        # Fall back to un-offset lines if the offset pushed us past the boundary.
+        if len(x_lines) == 0:
+            x_lines = np.arange(x_min, x_max, spacing)
+        if len(y_lines) == 0:
+            y_lines = np.arange(y_min, y_max, spacing)
+
+        pts: list[tuple[float, float]] = [center]
+
+        if sweep_number % 2 == 0:
+            # Vertical scan lines along X.
+            for idx, x_val in enumerate(x_lines):
+                if idx % 2 == 0:
+                    pts.append((float(x_val), y_min))
+                    pts.append((float(x_val), y_max))
+                else:
+                    pts.append((float(x_val), y_max))
+                    pts.append((float(x_val), y_min))
+        else:
+            # Horizontal scan lines along Y.
+            for idx, y_val in enumerate(y_lines):
+                if idx % 2 == 0:
+                    pts.append((x_min, float(y_val)))
+                    pts.append((x_max, float(y_val)))
+                else:
+                    pts.append((x_max, float(y_val)))
+                    pts.append((x_min, float(y_val)))
+
+        all_sweeps.append((sweep_number, pts))
+        sweep_number += 1
+
+    return all_sweeps
+
+
+def build_positions_from_sweeps(cfg: Dict[str, Any]) -> List[Tuple[float, float]]:
+    """
+    Read sweep parameters from *cfg* and return a flat, ordered list of
+    (x, y) waypoints — a drop-in replacement for the old build_grid().
+
+    All sweep paths are concatenated in sweep order; the caller can index
+    into the list with move_counter just as before.
+    """
+    grid = cfg["grid"]
+
+    x_min = float(grid["x_start"])
+    y_min = float(grid["y_start"])
+    x_max = float(grid["x_end"])
+    y_max = float(grid["y_end"])
+
+    sweeps        = int(grid.get("sweeps",        5))
+    start_sweep   = int(grid.get("start_sweep",   1))
+    start_spacing = float(grid.get("start_spacing", 120.0))
+    decay         = float(grid.get("decay",        0.75))
+    min_spacing   = float(grid.get("min_spacing",  20.0))
+
+    sweep_data = _generate_sweep_points(
+        sweeps        = sweeps,
+        x_min         = x_min,
+        x_max         = x_max,
+        y_min         = y_min,
+        y_max         = y_max,
+        start_sweep   = start_sweep,
+        start_spacing = start_spacing,
+        decay         = decay,
+        min_spacing   = min_spacing,
+    )
+
+    positions: List[Tuple[float, float]] = []
+    for sweep_number, pts in sweep_data:
+        positions.extend(pts)
+
+    return positions
 
 def run_rover(
     x: float,
@@ -286,9 +403,14 @@ def rover_client(connect: str, config_path: Path) -> None:
     cfg: Dict[str, Any]  = load_config(config_path)
     cycle_positions: bool = cfg.get("cycle_positions", True)
 
-    positions = build_grid(cfg)
+    positions = build_positions_from_sweeps(cfg)
     logger.info("[%s] loaded config from %s", CLIENT_ID, config_path)
-    logger.info("[%s] grid has %d node(s)", CLIENT_ID, len(positions))
+    logger.info(
+        "[%s] sweep grid: %d total waypoint(s) across %d sweep(s)",
+        CLIENT_ID,
+        len(positions),
+        cfg["grid"].get("sweeps", 5),
+    )
     if cfg.get("verbose"):
         for i, (x, y) in enumerate(positions):
             logger.info("  [%4d] X=%.3f Y=%.3f", i, x, y)
@@ -340,9 +462,9 @@ def rover_client(connect: str, config_path: Path) -> None:
             else:
                 pos_index = move_counter - 1
                 if pos_index >= len(positions):
-                    logger.error(
+                    logger.info(
                         f"[{CLIENT_ID}][exp {experiment_id}][meas {meas_id}] "
-                        f"ERROR: grid exhausted after {len(positions)} position(s)."
+                        f"ALL_DONE: sweep grid DONE after {len(positions)} waypoint(s)."
                     )
                     send({
                         "type":          "MOVE_DONE",
@@ -350,8 +472,7 @@ def rover_client(connect: str, config_path: Path) -> None:
                         "cycle_id":      cycle_id,
                         "meas_id":       meas_id,
                         "id":            CLIENT_ID,
-                        "status":        "error",
-                        "error":         f"Grid exhausted: all {len(positions)} positions have been used.",
+                        "status":        "ALL_DONE",
                         "ts":            now_ms(),
                     })
                     continue
@@ -360,7 +481,7 @@ def rover_client(connect: str, config_path: Path) -> None:
 
             logger.info(
                 f"[{CLIENT_ID}][exp {experiment_id}][meas {meas_id}] "
-                f"MOVE received  → grid[{pos_index}] X={x:.3f}  Y={y:.3f}"
+                f"MOVE received  → waypoint[{pos_index}] X={x:.3f}  Y={y:.3f}"
             )
 
             try:
@@ -447,6 +568,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+
     try:
         runtime_config = runtime_storage.resolve_runtime_output_dir(
             args.experiment_settings,

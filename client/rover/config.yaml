@@ -9,11 +9,15 @@ work_area:
 feed_rate: 4000.0
 
 grid:
-  x_start: 300.0    # first column
-  y_start: 300.0    # first row
-  x_end:   900.0    # last column
-  y_end:   900.0    # last row
-  spacing: 150.0    # distance between adjacent nodes [mm]
+  x_start: 10.0         # first column
+  y_start: 10.0         # first row
+  x_end:   1240.0         # last column
+  y_end:   1240.0         # last row
+  sweeps:        10       # total number of sweeps to generate
+  start_spacing: 120.0   # spacing (mm) used for sweep 1
+  decay:         0.75    # multiply spacing by this every odd sweep (>=3)
+  min_spacing:   20.0    # floor for spacing
+  start_sweep:   1       # resume from this sweep number (default 1)
 
 cycle_positions: false
 home_after_move: false
