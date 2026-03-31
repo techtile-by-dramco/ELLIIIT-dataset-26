@@ -6,9 +6,12 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 import os
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -23,13 +26,19 @@ if str(CLIENT_DIR) not in sys.path:
     sys.path.insert(0, str(CLIENT_DIR))
 
 import runtime_storage
+import tools
+
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_SETTINGS_FILE = REPO_ROOT / "experiment-settings.yaml"
 DEFAULT_CABLE_FILE = REPO_ROOT / "client" / "ref-RF-cable.yml"
 DEFAULT_POSITIONS_ROOT = REPO_ROOT / "server" / "record" / "data"
-DEFAULT_OUTPUT_FILE = Path(__file__).resolve().with_name("csi_positions.nc")
-SUPPORTED_RESULT_SUFFIXES = {".json", ".jsonl", ".yaml", ".yml", ".csv", ".txt", ".log"}
+DEFAULT_OUTPUT_FILE = REPO_ROOT / "data" / "csi.nc"
+DEFAULT_DATA_ROOT = Path(r"\\10.128.48.9\elliit") if os.name == "nt" else None
+DEFAULT_WORKERS = min(16, max(4, os.cpu_count() or 1))
+RESULT_FILE_SUFFIX = ".npz"
 FLOAT_PATTERN = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
 INTEGER_PATTERN = r"[-+]?\d+"
 POSITION_FILE_PATTERN = re.compile(r"^exp-(?P<experiment_id>.+)-positions\.csv$")
@@ -101,10 +110,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--data-root",
         type=Path,
-        default=None,
+        default=DEFAULT_DATA_ROOT,
         help=(
-            "Optional path to the directory that contains the hostname folders. "
-            "Overrides experiment_config.storage_path."
+            "Path to the directory that contains the hostname folders. "
+            "On Windows this defaults to the UNC network path "
+            r"'\\10.128.48.9\elliit'. Overrides experiment_config.storage_path."
         ),
     )
     parser.add_argument(
@@ -125,7 +135,27 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_OUTPUT_FILE,
         help="NetCDF file written with the joined xarray dataset.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--max-measurements",
+        type=int,
+        default=None,
+        help=(
+            "Only read the first N measurement .npz files per hostname folder, "
+            "sorted by parsed experiment and cycle ID."
+        ),
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULT_WORKERS,
+        help="Number of worker threads used for per-file CSI extraction.",
+    )
+    args = parser.parse_args()
+    if args.max_measurements is not None and args.max_measurements <= 0:
+        parser.error("--max-measurements must be a positive integer.")
+    if args.workers <= 0:
+        parser.error("--workers must be a positive integer.")
+    return args
 
 
 def load_yaml_mapping(path: Path) -> dict[str, Any]:
@@ -136,8 +166,16 @@ def load_yaml_mapping(path: Path) -> dict[str, Any]:
     return data
 
 
+def configure_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+
 def warn(message: str) -> None:
-    print(f"Warning: {message}", file=sys.stderr)
+    logger.warning(message)
 
 
 def is_smb_path(storage_path: str) -> bool:
@@ -149,6 +187,7 @@ def resolve_data_root(args: argparse.Namespace, settings: dict[str, Any]) -> Pat
         data_root = args.data_root.expanduser().resolve()
         if not data_root.exists():
             raise FileNotFoundError(f"Data root does not exist: {data_root}")
+        logger.info("Using explicit data root: %s", data_root)
         return data_root
 
     experiment_config = settings.get("experiment_config") or {}
@@ -159,16 +198,20 @@ def resolve_data_root(args: argparse.Namespace, settings: dict[str, Any]) -> Pat
         )
 
     if is_smb_path(str(storage_path)):
+        logger.info("Resolving SMB storage path from config: %s", storage_path)
         smb_candidate = Path(str(storage_path).replace("\\", "/"))
         if smb_candidate.exists():
+            logger.info("Using directly accessible SMB path: %s", smb_candidate)
             return smb_candidate
 
         if os.name == "nt":
             data_root = Path(storage_path)
             if not data_root.exists():
                 raise FileNotFoundError(f"SMB path does not exist: {data_root}")
+            logger.info("Using Windows SMB path: %s", data_root)
             return data_root
 
+        logger.info("Mounting SMB storage via runtime_storage.prepare_storage_base()")
         data_root = runtime_storage.prepare_storage_base(
             storage_path=str(storage_path),
             settings_path=args.config_file.resolve(),
@@ -176,6 +219,7 @@ def resolve_data_root(args: argparse.Namespace, settings: dict[str, Any]) -> Pat
         )
         if not data_root.exists():
             raise FileNotFoundError(f"Resolved SMB mount does not exist: {data_root}")
+        logger.info("Using mounted SMB data root: %s", data_root)
         return data_root
 
     data_root = Path(storage_path).expanduser()
@@ -183,12 +227,19 @@ def resolve_data_root(args: argparse.Namespace, settings: dict[str, Any]) -> Pat
         data_root = (args.config_file.resolve().parent / data_root).resolve()
     if not data_root.exists():
         raise FileNotFoundError(f"Data root does not exist: {data_root}")
+    logger.info("Using local data root from config: %s", data_root)
     return data_root
 
 
 def load_cable_phases(cable_file: Path) -> dict[str, float]:
+    logger.info("Reading cable phases from %s", cable_file)
     cable_data = load_yaml_mapping(cable_file)
-    return {str(hostname).strip().upper(): float(value) for hostname, value in cable_data.items()}
+    cable_phases = {
+        str(hostname).strip().upper(): float(value)
+        for hostname, value in cable_data.items()
+    }
+    logger.info("Loaded cable phase entries for %d hostnames", len(cable_phases))
+    return cable_phases
 
 
 def scalarize(value: Any) -> Any:
@@ -258,9 +309,12 @@ def parse_experiment_id_from_result_file(path: Path, host_candidates: Iterable[s
         host = str(host).strip()
         if not host:
             continue
-        prefix = f"data_{host}_"
-        if stem.startswith(prefix):
-            experiment_id = stem[len(prefix):].strip("_")
+        pattern = re.compile(
+            rf"^data_{re.escape(host)}_(?P<experiment_id>.+?)_(?P<cycle_id>{INTEGER_PATTERN})(?:_.+)?$"
+        )
+        match = pattern.match(stem)
+        if match is not None:
+            experiment_id = match.group("experiment_id").strip("_")
             if experiment_id:
                 return experiment_id
     return None
@@ -276,20 +330,33 @@ def parse_ids_from_file_name(file_name: str, host_candidates: Iterable[str]) -> 
         host = str(host).strip()
         if not host:
             continue
-        prefix = f"data_{host}_"
-        if not file_stem.startswith(prefix):
-            continue
-
-        remainder = file_stem[len(prefix):]
-        experiment_part, separator, cycle_part = remainder.rpartition("_")
-        if not separator or not experiment_part or not cycle_part:
-            continue
-        try:
-            return experiment_part, parse_cycle_id(cycle_part)
-        except ValueError:
-            continue
+        pattern = re.compile(
+            rf"^data_{re.escape(host)}_(?P<experiment_id>.+?)_(?P<cycle_id>{INTEGER_PATTERN})(?:_.+)?$"
+        )
+        match = pattern.match(file_stem)
+        if match is not None:
+            return match.group("experiment_id"), parse_cycle_id(match.group("cycle_id"))
 
     return None, None
+
+
+def is_matching_result_npz(path: Path, host_folder: str) -> bool:
+    if path.suffix.lower() != RESULT_FILE_SUFFIX:
+        return False
+    host = str(host_folder).strip()
+    if not host:
+        return False
+    pattern = re.compile(
+        rf"^data_{re.escape(host)}_.+_{INTEGER_PATTERN}(?:_.+)?{re.escape(RESULT_FILE_SUFFIX)}$"
+    )
+    return pattern.match(path.name) is not None
+
+
+def measurement_file_sort_key(path: Path, host_folder: str) -> tuple[str, int, str]:
+    experiment_id, cycle_id = parse_ids_from_file_name(path.name, [host_folder])
+    if cycle_id is None:
+        cycle_id = sys.maxsize
+    return (experiment_id or "", cycle_id, path.name)
 
 
 def canonicalize_record(
@@ -395,6 +462,54 @@ def extract_records_from_structured_value(
 def extract_records_from_json_file(path: Path, host_folder: str) -> list[dict[str, Any]]:
     data = json.loads(read_text(path))
     return extract_records_from_structured_value(data, host_folder, "json", path)
+
+
+def extract_record_from_pilot_iq(
+    pilot_iq: Any,
+    values: dict[str, Any],
+    host_folder: str,
+    source_path: Path,
+) -> dict[str, Any] | None:
+    iq_samples = np.asarray(pilot_iq)
+    if iq_samples.ndim != 2 or iq_samples.shape[0] < 2 or iq_samples.shape[1] == 0:
+        return None
+
+    phase_ch0, _, _ = tools.get_phases_and_apply_bandpass(iq_samples[0, :])
+    phase_ch1, _, _ = tools.get_phases_and_apply_bandpass(iq_samples[1, :])
+    phase_diff = tools.to_min_pi_plus_pi(phase_ch0 - phase_ch1, deg=False)
+    pilot_phase = float(tools.circmean(phase_diff, deg=False))
+    pilot_amplitude = float(np.sqrt(np.mean(np.abs(iq_samples[1, :]) ** 2)))
+
+    raw_record: dict[str, Any] = {
+        "hostname": scalarize(values.get("hostname", host_folder)),
+        "file_name": scalarize(values.get("file_name", source_path.stem)),
+        "pilot_phase": pilot_phase,
+        "pilot_amplitude": pilot_amplitude,
+    }
+    for key in ("experiment_id", "cycle_id", "meas_id"):
+        if key in values:
+            raw_record[key] = scalarize(values[key])
+
+    return canonicalize_record(raw_record, host_folder, "npz_iq", source_path)
+
+
+def extract_records_from_npz_file(path: Path, host_folder: str) -> list[dict[str, Any]]:
+    values: dict[str, Any] = {}
+    with np.load(path, allow_pickle=True) as archive:
+        for key in archive.files:
+            values[key] = scalarize(archive[key])
+
+    records = extract_records_from_structured_value(values, host_folder, "npz", path)
+    if records:
+        return records
+
+    for iq_key in ("pilot_iq", "iq_capture"):
+        if iq_key in values:
+            record = extract_record_from_pilot_iq(values[iq_key], values, host_folder, path)
+            if record is not None:
+                return [record]
+
+    return []
 
 
 def extract_records_from_yaml_file(path: Path, host_folder: str) -> list[dict[str, Any]]:
@@ -529,6 +644,8 @@ def extract_records_from_text_file(path: Path, host_folder: str) -> list[dict[st
 
 def extract_records_from_file(path: Path, host_folder: str) -> list[dict[str, Any]]:
     suffix = path.suffix.lower()
+    if suffix == ".npz":
+        return extract_records_from_npz_file(path, host_folder)
     if suffix == ".json":
         return extract_records_from_json_file(path, host_folder)
     if suffix in {".yaml", ".yml"}:
@@ -573,50 +690,122 @@ def build_csi_row(
     }
 
 
+def extract_csi_rows_from_file(
+    result_file: Path,
+    host_folder: str,
+    cable_phases: dict[str, float],
+) -> list[dict[str, Any]]:
+    logger.info("Reading result file %s", result_file)
+    records = extract_records_from_file(result_file, host_folder)
+    if not records:
+        logger.info("No usable records found in %s", result_file)
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        phi_cable_deg = find_cable_phase(
+            cable_phases,
+            record["host_folder"],
+            record["hostname"],
+        )
+        if phi_cable_deg is None:
+            raise KeyError(
+                f"No cable phase found for hostname '{record['hostname']}' "
+                f"(folder '{record['host_folder']}')."
+            )
+        rows.append(build_csi_row(record, phi_cable_deg))
+    return rows
+
+
 def collect_csi_rows(
     data_root: Path,
     cable_phases: dict[str, float],
+    max_measurements: int | None = None,
+    workers: int = DEFAULT_WORKERS,
 ) -> tuple[list[dict[str, Any]], int]:
     rows: list[dict[str, Any]] = []
     skipped_files = 0
+    host_dirs = sorted(path for path in data_root.iterdir() if path.is_dir())
+    logger.info("Found %d hostname folders under %s", len(host_dirs), data_root)
+    work_items: list[tuple[str, Path]] = []
 
-    for host_dir in sorted(path for path in data_root.iterdir() if path.is_dir()):
+    for host_dir in host_dirs:
         candidate_files = sorted(
-            path
-            for path in host_dir.iterdir()
-            if path.is_file()
-            and path.suffix.lower() in SUPPORTED_RESULT_SUFFIXES
-            and not path.name.endswith("_iq.npz")
+            (
+                path
+                for path in host_dir.iterdir()
+                if path.is_file()
+                and is_matching_result_npz(path, host_dir.name)
+            ),
+            key=lambda path: measurement_file_sort_key(path, host_dir.name),
         )
         if not candidate_files:
+            logger.info(
+                "Skipping host folder %s: no matching data_<HOST>_<EXP>_<CYCLE>*.npz files",
+                host_dir.name,
+            )
             continue
 
-        for result_file in candidate_files:
-            try:
-                records = extract_records_from_file(result_file, host_dir.name)
-                if not records:
-                    continue
+        if max_measurements is not None:
+            logger.info(
+                "Limiting host folder %s to first %d measurements for debugging",
+                host_dir.name,
+                max_measurements,
+            )
+            candidate_files = candidate_files[:max_measurements]
 
-                for record in records:
-                    phi_cable_deg = find_cable_phase(
-                        cable_phases,
-                        record["host_folder"],
-                        record["hostname"],
-                    )
-                    if phi_cable_deg is None:
-                        raise KeyError(
-                            f"No cable phase found for hostname '{record['hostname']}' "
-                            f"(folder '{record['host_folder']}')."
-                        )
-                    rows.append(build_csi_row(record, phi_cable_deg))
+        logger.info(
+            "Scanning host folder %s with %d result files",
+            host_dir.name,
+            len(candidate_files),
+        )
+        for result_file in candidate_files:
+            work_items.append((host_dir.name, result_file))
+
+    logger.info(
+        "Processing %d measurement files using %d worker thread(s)",
+        len(work_items),
+        workers,
+    )
+    if workers == 1 or len(work_items) <= 1:
+        for host_folder, result_file in work_items:
+            try:
+                rows.extend(extract_csi_rows_from_file(result_file, host_folder, cable_phases))
             except Exception as exc:
                 skipped_files += 1
                 warn(f"Skipping {result_file}: {exc}")
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_item = {
+                executor.submit(
+                    extract_csi_rows_from_file,
+                    result_file,
+                    host_folder,
+                    cable_phases,
+                ): (host_folder, result_file)
+                for host_folder, result_file in work_items
+            }
+            for future in as_completed(future_to_item):
+                _, result_file = future_to_item[future]
+                try:
+                    rows.extend(future.result())
+                except Exception as exc:
+                    skipped_files += 1
+                    warn(f"Skipping {result_file}: {exc}")
 
     deduped: dict[tuple[str, int, str], dict[str, Any]] = {}
     for row in rows:
         deduped[(row["experiment_id"], row["cycle_id"], row["hostname"])] = row
-    return list(deduped.values()), skipped_files
+    deduped_rows = sorted(
+        deduped.values(),
+        key=lambda row: (str(row["experiment_id"]), int(row["cycle_id"]), str(row["hostname"])),
+    )
+    logger.info(
+        "Collected %d CSI rows (%d unique experiment/cycle/hostname combinations)",
+        len(rows),
+        len(deduped_rows),
+    )
+    return deduped_rows, skipped_files
 
 
 def load_positions(positions_root: Path) -> list[dict[str, Any]]:
@@ -625,7 +814,14 @@ def load_positions(positions_root: Path) -> list[dict[str, Any]]:
         raise FileNotFoundError(f"Positions directory does not exist: {positions_root}")
 
     position_rows: dict[tuple[str, int], dict[str, Any]] = {}
-    for path in sorted(positions_root.glob("exp-*-positions.csv")):
+    position_files = sorted(positions_root.glob("exp-*-positions.csv"))
+    logger.info(
+        "Reading positions from %s (%d matching files)",
+        positions_root,
+        len(position_files),
+    )
+    for path in position_files:
+        logger.info("Reading positions file %s", path)
         match = POSITION_FILE_PATTERN.match(path.name)
         if match is None:
             continue
@@ -654,7 +850,9 @@ def load_positions(positions_root: Path) -> list[dict[str, Any]]:
                     "position_available": 1.0 if str(row.get("position_status", "")).strip().lower() == "ok" else 0.0,
                 }
 
-    return list(position_rows.values())
+    rows = list(position_rows.values())
+    logger.info("Loaded %d unique position rows", len(rows))
+    return rows
 
 
 def build_dataset(
@@ -702,6 +900,12 @@ def build_dataset(
         csi_imag[exp_idx, cyc_idx, host_idx] = row["csi_imag"]
         csi_available[exp_idx, cyc_idx, host_idx] = 1.0
 
+    logger.info(
+        "Building xarray dataset: experiments=%d cycles=%d hostnames=%d",
+        len(experiment_ids),
+        len(cycle_ids),
+        len(hostnames),
+    )
     dataset = xr.Dataset(
         data_vars={
             "rover_x": (("experiment_id", "cycle_id"), x),
@@ -731,20 +935,49 @@ def build_dataset(
 def write_dataset(dataset: xr.Dataset, output_file: Path) -> Path:
     output_file = output_file.expanduser().resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    dataset.to_netcdf(output_file, engine="scipy")
-    return output_file
+    write_target = output_file
+    if write_target.exists():
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        write_target = output_file.with_name(f"{output_file.stem}_{timestamp}{output_file.suffix}")
+        suffix_counter = 1
+        while write_target.exists():
+            write_target = output_file.with_name(
+                f"{output_file.stem}_{timestamp}_{suffix_counter:02d}{output_file.suffix}"
+            )
+            suffix_counter += 1
+        logger.warning(
+            "Output file already exists, writing to timestamped file instead: %s",
+            write_target,
+        )
+    logger.info("Writing NetCDF dataset to %s", write_target)
+    dataset.to_netcdf(str(write_target), engine="scipy", mode="w")
+    return write_target
 
 
 def main() -> int:
+    configure_logging()
     args = parse_args()
     args.config_file = args.config_file.expanduser().resolve()
     args.cable_file = args.cable_file.expanduser().resolve()
     args.positions_root = args.positions_root.expanduser().resolve()
+    logger.info("Starting CSI extraction")
+    logger.info("Config file: %s", args.config_file)
+    logger.info("Positions root: %s", args.positions_root)
+    logger.info("Output file: %s", args.output)
+    logger.info("Worker threads: %d", args.workers)
+    if args.max_measurements is not None:
+        logger.info("Max measurements per hostname folder: %d", args.max_measurements)
 
+    logger.info("Loading experiment settings from %s", args.config_file)
     settings = load_yaml_mapping(args.config_file)
     data_root = resolve_data_root(args, settings)
     cable_phases = load_cable_phases(args.cable_file)
-    csi_rows, skipped_files = collect_csi_rows(data_root, cable_phases)
+    csi_rows, skipped_files = collect_csi_rows(
+        data_root,
+        cable_phases,
+        max_measurements=args.max_measurements,
+        workers=args.workers,
+    )
     position_rows = load_positions(args.positions_root)
     dataset = build_dataset(csi_rows, position_rows)
     output_path = write_dataset(dataset, args.output)
