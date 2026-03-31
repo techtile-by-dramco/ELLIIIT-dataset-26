@@ -264,10 +264,59 @@ Per `START_MEAS`, exactly one RF cycle is executed:
 
 The RF worker mode is selected per tile group in `experiment-settings.yaml` under `client_scripts`:
 
-- `client/run_reciprocity.py`: receives one pilot RX capture plus one internal loopback capture and stores `<file_name>_iq.npz` with pilot and loopback data, phase, amplitude, hostname, measurement metadata, and file name.
-- `client/run_uncalibrated.py`: receives pilot RX only and stores `<file_name>_iq.npz` with pilot IQ and measurement metadata.
+- `client/run_reciprocity.py`: receives one pilot RX capture and appends one JSON-line result record per successful RF capture to `data_<HOSTNAME>_<experiment_id>.txt`. The active path no longer stores raw IQ captures.
+- `client/run_uncalibrated.py`: receives one pilot RX capture and appends the same JSON-line result schema to `data_<HOSTNAME>_<experiment_id>.txt`. It also no longer stores raw IQ captures in the active path.
 - `client/usrp_pilot.py`: transmits the configured pilot waveform for the selected phase.
 - `client/run-ref.py`: provides the continuous reference transmission and readiness registration used by the outer control plane.
+
+For both `client/run_reciprocity.py` and `client/run_uncalibrated.py`, each successful RF capture stores:
+
+- `timestamp_utc`
+- `hostname`
+- `file_name` as `data_<HOSTNAME>_<experiment_id>_<cycle_id>`
+- `experiment_id`
+- `cycle_id`
+- `pilot_phase` in radians
+- `pilot_phase_deg` in degrees
+- `pilot_amplitude`
+- `avg_amplitude_ch0` and `avg_amplitude_ch1`
+- `rms_amplitude_ch0` and `rms_amplitude_ch1`
+- `max_i_ch0`, `max_i_ch1`, `max_q_ch0`, and `max_q_ch1`
+- `freq_offset_ch0_before_hz`, `freq_offset_ch0_after_hz`, `freq_offset_ch1_before_hz`, and `freq_offset_ch1_after_hz`
+- `captured_samples`
+
+Both scripts also append JSON-line runtime diagnostics to `error.log`. Each error entry stores:
+
+- `timestamp_utc`
+- `hostname`
+- `error_type`
+- `message`
+- `experiment_id`, `cycle_id`, and `file_name` when that context is available
+- any extra error-specific fields, such as `capture_type`, buffer sizes, metadata error names, or numeric measurements related to the failure
+
+## RF Processing
+
+Position logs are written by the orchestrator to `server/record/data/exp-<experiment_id>-positions.csv`.
+
+The current CSI extraction helper is [`processing/extract_csi_from_smb.py`](/mnt/c/Users/Calle/OneDrive/Documenten/GitHub/ELLIIIT-dataset-26/processing/extract_csi_from_smb.py). It builds one xarray/NetCDF file by:
+
+- scanning each hostname folder for measurement archives named `data_<HOSTNAME>_<experiment_id>_<cycle_id>*.npz`
+- extracting `pilot_phase` and `pilot_amplitude` directly when present, or deriving them from legacy `pilot_iq` stored inside the archive
+- applying the cable correction from `client/ref-RF-cable.yml`
+- joining RF CSI with rover positions on `experiment_id` and `cycle_id`
+- writing a dataset with `csi_real`, `csi_imag`, `rover_x`, `rover_y`, `rover_z`, and availability masks
+
+Useful commands:
+
+```bash
+python processing/extract_csi_from_smb.py
+python processing/extract_csi_from_smb.py --max-measurements 10
+python processing/extract_csi_from_smb.py --data-root /path/to/data/root
+```
+
+On Windows, `processing/extract_csi_from_smb.py` defaults `--data-root` to the UNC network path `\\10.128.48.9\elliit`.
+
+For quick inspection and plotting, use [`processing/plot_csi_positions.ipynb`](/mnt/c/Users/Calle/OneDrive/Documenten/GitHub/ELLIIIT-dataset-26/processing/plot_csi_positions.ipynb). The notebook reads the NetCDF dataset, plots CSI phase as `np.angle(csi_real + 1j * csi_imag)` in degrees versus cycle ID, and plots the 2D rover trajectory.
 
 ## Operational Utilities
 
