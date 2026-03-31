@@ -4,7 +4,8 @@ import socket
 import sys
 import threading
 import time
-from datetime import datetime, timedelta
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import numpy as np
 import uhd
@@ -19,7 +20,7 @@ import runtime_storage
 #                           Experiment Configuration
 # =============================================================================
 # This section defines the default settings and timing parameters
-# used throughout the measurement and loopback procedure.
+# used throughout the pilot measurement procedure.
 # Values can be overridden by entries in the configuration YAML file.
 # =============================================================================
 
@@ -41,6 +42,8 @@ exp_id = 0  # Experiment identifier
 # =============================================================================
 
 results = []
+PEAK_AMPLITUDE_HIGH_THRESHOLD = 1.0
+PEAK_AMPLITUDE_LOW_THRESHOLD = 0.01
 
 SWITCH_LOOPBACK_MODE = 0x00000006  # which is 110
 SWITCH_RESET_MODE = 0x00000000
@@ -62,6 +65,7 @@ RUNTIME_OUTPUT_DIR = None
 data_file = None
 data_file_path = None
 log_file_handler = None
+error_log_lock = threading.Lock()
 
 
 # =============================================================================
@@ -125,7 +129,7 @@ DEG = "\u00b0"
 #                           Logger and Channel Configuration
 # =============================================================================
 # This section initializes the global logger and defines the
-# channel mapping used for reference and loopback measurements.
+# channel mapping used during pilot capture.
 # =============================================================================
 
 global logger
@@ -199,6 +203,61 @@ def build_output_path(file_name):
     return RUNTIME_OUTPUT_DIR / file_name
 
 
+def utc_now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _json_safe(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+def append_error_log(error_type, message, **fields):
+    if RUNTIME_OUTPUT_DIR is None:
+        logger.error("Unable to write error log before runtime output is configured.")
+        return
+
+    entry = {
+        "timestamp_utc": utc_now_iso(),
+        "hostname": HOSTNAME,
+        "error_type": error_type,
+        "message": str(message),
+    }
+    current_context = {
+        "experiment_id": globals().get("exp_id"),
+        "cycle_id": globals().get("meas_id"),
+        "file_name": globals().get("file_name"),
+    }
+    for key, value in current_context.items():
+        if value not in (None, "", 0):
+            entry[key] = _json_safe(value)
+    entry.update({key: _json_safe(value) for key, value in fields.items()})
+
+    error_log_path = build_output_path("error.log")
+    try:
+        with error_log_lock:
+            with open(error_log_path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as ex:
+        logger.error("Failed to append to error log %s: %s", error_log_path, ex)
+
+
+def append_result_record(record):
+    global data_file
+
+    if data_file is None or data_file.closed:
+        raise RuntimeError("Result file is not open.")
+
+    safe_record = {key: _json_safe(value) for key, value in record.items()}
+    data_file.write(json.dumps(safe_record, ensure_ascii=False) + "\n")
+    data_file.flush()
+
+
 def rx_ref(
     usrp,
     rx_streamer,
@@ -237,12 +296,23 @@ def rx_ref(
     rx_streamer.issue_stream_cmd(stream_cmd)
     num_rx = 0
     result_pushed = False
+    logged_metadata_errors = set()
+    buffer_overflow_logged = False
     try:
         while not quit_event.is_set():
             try:
                 num_rx_i = rx_streamer.recv(recv_buffer, rx_md, timeout)
                 if rx_md.error_code != uhd.types.RXMetadataErrorCode.none:
                     logger.error(rx_md.error_code)
+                    error_name = str(rx_md.error_code)
+                    if error_name not in logged_metadata_errors:
+                        append_error_log(
+                            "RX_METADATA_ERROR",
+                            f"RX metadata error during {capture_type}: {error_name}",
+                            capture_type=capture_type,
+                            metadata_error=error_name,
+                        )
+                        logged_metadata_errors.add(error_name)
                 else:
                     if num_rx_i > 0:
                         # samples = recv_buffer[:,:num_rx_i]
@@ -252,6 +322,16 @@ def rx_ref(
                             logger.error(
                                 "more samples received than buffer long, not storing the data"
                             )
+                            if not buffer_overflow_logged:
+                                append_error_log(
+                                    "RX_BUFFER_OVERFLOW",
+                                    f"RX buffer overflow during {capture_type}.",
+                                    capture_type=capture_type,
+                                    buffer_length=buffer_length,
+                                    num_rx=num_rx,
+                                    num_rx_i=num_rx_i,
+                                )
+                                buffer_overflow_logged = True
                         else:
                             iq_data[:, num_rx : num_rx + num_rx_i] = samples
                             # threading.Thread(target=send_rx,
@@ -260,14 +340,19 @@ def rx_ref(
             except RuntimeError as ex:
                 error_msg = f"Runtime error in receive ({capture_type}): {ex}"
                 logger.error(error_msg)
+                append_error_log(
+                    "RX_RUNTIME_ERROR",
+                    error_msg,
+                    capture_type=capture_type,
+                )
                 result_queue.put(
                     {
                         "ok": False,
                         "capture_type": capture_type,
-                        "iq_capture": iq_data[:, :num_rx].copy(),
+                        # "iq_capture": iq_data[:, :num_rx].copy(),
                         "phase": None,
                         "amplitude": None,
-                        "num_rx": num_rx,
+                        # "num_rx": num_rx,
                         "error": error_msg,
                     }
                 )
@@ -287,14 +372,19 @@ def rx_ref(
         if num_rx <= 0:
             error_msg = f"No IQ samples captured during {capture_type}."
             logger.error(error_msg)
+            append_error_log(
+                "NO_IQ_SAMPLES",
+                error_msg,
+                capture_type=capture_type,
+            )
             result_queue.put(
                 {
                     "ok": False,
                     "capture_type": capture_type,
-                    "iq_capture": iq_capture,
+                    # "iq_capture": iq_capture,
                     "phase": None,
                     "amplitude": None,
-                    "num_rx": num_rx,
+                    # "num_rx": num_rx,
                     "error": error_msg,
                 }
             )
@@ -309,6 +399,13 @@ def rx_ref(
                 "Capture %s shorter than analysis window; using full capture for phase/amplitude summary.",
                 capture_type,
             )
+            append_error_log(
+                "SHORT_CAPTURE_WINDOW",
+                f"Capture {capture_type} shorter than analysis window; using full capture.",
+                capture_type=capture_type,
+                captured_samples=num_rx,
+                analysis_start=analysis_start,
+            )
             iq_samples = iq_capture
 
         try:
@@ -321,14 +418,19 @@ def rx_ref(
         except Exception as ex:
             error_msg = f"IQ analysis failed for {capture_type}: {ex}"
             logger.error(error_msg)
+            append_error_log(
+                "IQ_ANALYSIS_FAILED",
+                error_msg,
+                capture_type=capture_type,
+            )
             result_queue.put(
                 {
                     "ok": False,
                     "capture_type": capture_type,
-                    "iq_capture": iq_capture,
+                    # "iq_capture": iq_capture,
                     "phase": None,
                     "amplitude": None,
-                    "num_rx": num_rx,
+                    # "num_rx": num_rx,
                     "error": error_msg,
                 }
             )
@@ -380,18 +482,6 @@ def rx_ref(
 
         A_rms = np.sqrt(np.mean(np.abs(iq_samples) ** 2, axis=1))
 
-        result_queue.put(
-            {
-                "ok": True,
-                "capture_type": capture_type,
-                "iq_capture": iq_capture,
-                "phase": float(_circ_mean),
-                "amplitude": float(A_rms[1]),
-                "num_rx": num_rx,
-                "error": "",
-            }
-        )
-
         max_I = np.max(np.abs(np.real(iq_samples)), axis=1)
         max_Q = np.max(np.abs(np.imag(iq_samples)), axis=1)
 
@@ -409,6 +499,77 @@ def rx_ref(
             fmt(avg_ampl[1]),
         )
 
+        phase_value = float(_circ_mean)
+        amplitude_value = float(A_rms[1])
+        max_peak = np.concatenate((max_I, max_Q))
+
+        if not np.isfinite(phase_value) or not np.isfinite(amplitude_value):
+            error_msg = (
+                f"Non-finite measurement summary for {capture_type}: "
+                f"phase={phase_value}, amplitude={amplitude_value}"
+            )
+            logger.error(error_msg)
+            append_error_log(
+                "NONFINITE_MEASUREMENT",
+                error_msg,
+                capture_type=capture_type,
+                phase=phase_value,
+                amplitude=amplitude_value,
+            )
+            result_queue.put(
+                {
+                    "ok": False,
+                    "capture_type": capture_type,
+                    "phase": None,
+                    "amplitude": None,
+                    "error": error_msg,
+                }
+            )
+            return
+
+        if np.any(max_peak > PEAK_AMPLITUDE_HIGH_THRESHOLD):
+            append_error_log(
+                "HIGH_PEAK_AMPLITUDE",
+                f"Peak IQ component above {PEAK_AMPLITUDE_HIGH_THRESHOLD} during {capture_type}.",
+                capture_type=capture_type,
+                threshold=PEAK_AMPLITUDE_HIGH_THRESHOLD,
+                max_i=max_I,
+                max_q=max_Q,
+            )
+
+        if np.any(max_peak < PEAK_AMPLITUDE_LOW_THRESHOLD):
+            append_error_log(
+                "LOW_PEAK_AMPLITUDE",
+                f"Peak IQ component below {PEAK_AMPLITUDE_LOW_THRESHOLD} during {capture_type}.",
+                capture_type=capture_type,
+                threshold=PEAK_AMPLITUDE_LOW_THRESHOLD,
+                max_i=max_I,
+                max_q=max_Q,
+            )
+
+        result_queue.put(
+            {
+                "ok": True,
+                "capture_type": capture_type,
+                "phase": phase_value,
+                "amplitude": amplitude_value,
+                "avg_amplitude_ch0": float(avg_ampl[0]),
+                "avg_amplitude_ch1": float(avg_ampl[1]),
+                "rms_amplitude_ch0": float(A_rms[0]),
+                "rms_amplitude_ch1": amplitude_value,
+                "max_i_ch0": float(max_I[0]),
+                "max_i_ch1": float(max_I[1]),
+                "max_q_ch0": float(max_Q[0]),
+                "max_q_ch1": float(max_Q[1]),
+                "freq_offset_ch0_before_hz": float(freq_slope_ch0_before),
+                "freq_offset_ch0_after_hz": float(freq_slope_ch0_after),
+                "freq_offset_ch1_before_hz": float(freq_slope_ch1_before),
+                "freq_offset_ch1_after_hz": float(freq_slope_ch1_after),
+                "captured_samples": int(num_rx),
+                "error": "",
+            }
+        )
+
 
 def setup_clock(usrp, clock_src, num_mboards):
     usrp.set_clock_source(clock_src)
@@ -422,6 +583,11 @@ def setup_clock(usrp, clock_src, num_mboards):
             is_locked = usrp.get_mboard_sensor("ref_locked", i)
         if not is_locked:
             logger.error("Unable to confirm clock signal locked on board %d", i)
+            append_error_log(
+                "CLOCK_LOCK_FAILED",
+                f"Unable to confirm clock signal locked on board {i}.",
+                board_index=i,
+            )
             return False
         else:
             logger.debug("Clock signals are locked")
@@ -507,7 +673,7 @@ def tune_usrp(usrp, freq, channels, at_time):
 
 def wait_till_go_from_server(ip, _connect=True):
 
-    global meas_id, file_open, data_file, data_file_path, file_name
+    global meas_id, exp_id, file_open, data_file, data_file_path, file_name
     # Connect to the publisher's address
     logger.debug("Connecting to server %s.", ip)
     sync_socket = context.socket(zmq.SUB)
@@ -531,6 +697,7 @@ def wait_till_go_from_server(ip, _connect=True):
     logger.debug("Waiting on SYNC from server %s.", ip)
 
     meas_id, unique_id = sync_socket.recv_string().split(" ")
+    exp_id = unique_id
 
     file_name = f"data_{HOSTNAME}_{unique_id}_{meas_id}"
 
@@ -1104,7 +1271,7 @@ def parse_arguments():
 
 
 def main():
-    global meas_id, file_name_state, data_file
+    global meas_id, exp_id, data_file
 
     args = parse_arguments()
     quit_event = None
@@ -1219,84 +1386,80 @@ def main():
 
             if not pilot_result["ok"]:
                 logger.error(
-                    "Pilot capture failed, skipping IQ save for this run. Reason: %s",
+                    "Pilot capture failed, skipping result write for this run. Reason: %s",
                     pilot_result["error"],
+                )
+                append_error_log(
+                    "PILOT_MEASUREMENT_FAILED",
+                    pilot_result["error"],
+                    capture_type="pilot",
+                    experiment_id=exp_id,
+                    cycle_id=meas_id,
+                    file_name=file_name,
                 )
                 send_usrp_done_mode(SERVER_IP)
                 continue
 
-            # Print pilot phase
             logger.info(
                 "Phase pilot reference signal: %s (rad) / %s%s",
                 fmt(pilot_result["phase"]),
                 fmt(np.rad2deg(pilot_result["phase"])),
                 DEG,
             )
-
-            # -------------------------------------------------------------------------
-            # STEP 3: Perform internal loopback measurement with reference signal
-            # -------------------------------------------------------------------------
-
-            loopback_result = measure_loopback(
-                usrp,
-                tx_streamer,
-                rx_streamer,
-                quit_event,
-                result_queue,
-                at_time=START_LB_RX,
-            )
-
-            if not loopback_result["ok"]:
-                logger.error(
-                    "Loopback capture failed, skipping IQ save for this run. Reason: %s",
-                    loopback_result["error"],
-                )
-                send_usrp_done_mode(SERVER_IP)
-                continue
-
-            # Print loopback phase
             logger.info(
-                "Phase LB reference signal: %s (rad) / %s%s",
-                fmt(loopback_result["phase"]),
-                fmt(np.rad2deg(loopback_result["phase"])),
-                DEG,
+                "Pilot RMS amplitude: %s",
+                fmt(pilot_result["amplitude"]),
             )
 
-            pilot_iq = pilot_result["iq_capture"]
-            loopback_iq = loopback_result["iq_capture"]
-
-            if pilot_iq.size == 0 or loopback_iq.size == 0:
-                logger.error(
-                    "One or more captures are empty (pilot size=%d, loopback size=%d); skipping IQ save for this run.",
-                    pilot_iq.size,
-                    loopback_iq.size,
+            result_record = {
+                "timestamp_utc": utc_now_iso(),
+                "hostname": HOSTNAME,
+                "file_name": file_name,
+                "experiment_id": exp_id,
+                "cycle_id": int(meas_id),
+                "pilot_phase": float(pilot_result["phase"]),
+                "pilot_phase_deg": float(np.rad2deg(pilot_result["phase"])),
+                "pilot_amplitude": float(pilot_result["amplitude"]),
+                "avg_amplitude_ch0": float(pilot_result["avg_amplitude_ch0"]),
+                "avg_amplitude_ch1": float(pilot_result["avg_amplitude_ch1"]),
+                "rms_amplitude_ch0": float(pilot_result["rms_amplitude_ch0"]),
+                "rms_amplitude_ch1": float(pilot_result["rms_amplitude_ch1"]),
+                "max_i_ch0": float(pilot_result["max_i_ch0"]),
+                "max_i_ch1": float(pilot_result["max_i_ch1"]),
+                "max_q_ch0": float(pilot_result["max_q_ch0"]),
+                "max_q_ch1": float(pilot_result["max_q_ch1"]),
+                "freq_offset_ch0_before_hz": float(pilot_result["freq_offset_ch0_before_hz"]),
+                "freq_offset_ch0_after_hz": float(pilot_result["freq_offset_ch0_after_hz"]),
+                "freq_offset_ch1_before_hz": float(pilot_result["freq_offset_ch1_before_hz"]),
+                "freq_offset_ch1_after_hz": float(pilot_result["freq_offset_ch1_after_hz"]),
+                "captured_samples": int(pilot_result["captured_samples"]),
+            }
+            try:
+                append_result_record(result_record)
+                logger.info("Appended pilot result to %s", data_file_path)
+            except Exception as ex:
+                logger.error("Failed to append pilot result: %s", ex)
+                append_error_log(
+                    "RESULT_WRITE_FAILED",
+                    f"Failed to append pilot result: {ex}",
+                    experiment_id=exp_id,
+                    cycle_id=meas_id,
+                    file_name=file_name,
                 )
-                send_usrp_done_mode(SERVER_IP)
-                continue
-
-            iq_file_name = build_output_path(f"{file_name}_iq.npz")
-            np.savez(
-                iq_file_name,
-                pilot_iq=pilot_iq,
-                loopback_iq=loopback_iq,
-                pilot_phase=pilot_result["phase"],
-                pilot_amplitude=pilot_result["amplitude"],
-                loopback_phase=loopback_result["phase"],
-                loopback_amplitude=loopback_result["amplitude"],
-                hostname=HOSTNAME,
-                meas_id=meas_id,
-                file_name=file_name,
-            )
-            logger.info("Saved pilot and loopback IQ captures to %s", iq_file_name)
 
             print("DONE")
-             # Send USRP is in TX mode for scope measurements
             send_usrp_done_mode(SERVER_IP)
 
     except Exception as e:
         # Handle any exception gracefully
         logger.debug("Sending signal to stop!")
         logger.error(e)
+        append_error_log(
+            "UNEXPECTED_EXCEPTION",
+            str(e),
+            experiment_id=exp_id,
+            cycle_id=meas_id,
+        )
         if quit_event is not None:
             quit_event.set()
 
