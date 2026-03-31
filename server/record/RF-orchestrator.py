@@ -22,9 +22,10 @@ import argparse
 import json
 import signal
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, TextIO
+from typing import Any, Dict, Iterable, Optional, TextIO
 
 import yaml
 import zmq
@@ -53,6 +54,8 @@ class RFSyncRuntime:
     log_file: Optional[TextIO]
     log_path: Optional[Path]
     buffered_alive: list[str]
+    last_alive_members: list[str]
+    last_done_members: list[str]
 
 
 def now_ms() -> int:
@@ -168,6 +171,8 @@ def init_rf_sync_runtime(ctx: zmq.Context, config: RFSyncConfig) -> RFSyncRuntim
         log_file=None,
         log_path=None,
         buffered_alive=[],
+        last_alive_members=[],
+        last_done_members=[],
     )
 
 
@@ -210,9 +215,21 @@ def _wait_for_quorum(
     timeout_s: float,
     phase: str,
     initial_messages: Optional[list[str]] = None,
+    expected_members: Optional[Iterable[str]] = None,
+    log_prefix: Optional[str] = None,
 ) -> list[str]:
     messages: list[str] = list(initial_messages or [])
+    prefix = log_prefix or f"[rf-sync][{phase}]"
+    expected_member_list = _resolve_expected_members(expected_members, expected)
     deadline = time.monotonic() + timeout_s
+
+    if messages and len(messages) < expected:
+        _print_waiting_for(
+            prefix,
+            messages,
+            expected=expected,
+            expected_members=expected_member_list,
+        )
 
     while len(messages) < expected:
         remaining_s = deadline - time.monotonic()
@@ -229,10 +246,64 @@ def _wait_for_quorum(
 
         message = socket.recv_string()
         messages.append(message)
-        print(f"[rf-sync][{phase}] {message} ({len(messages)}/{expected})")
+        print(f"{prefix} {message} ({len(messages)}/{expected})")
+        if len(messages) < expected:
+            _print_waiting_for(
+                prefix,
+                messages,
+                expected=expected,
+                expected_members=expected_member_list,
+            )
         socket.send_string("ACK")
 
     return messages
+
+
+def _resolve_expected_members(
+    expected_members: Optional[Iterable[str]],
+    expected: int,
+) -> Optional[list[str]]:
+    if expected_members is None:
+        return None
+
+    unique_members = sorted({str(member) for member in expected_members if str(member)})
+    if len(unique_members) != expected:
+        return None
+
+    return unique_members
+
+
+def _print_waiting_for(
+    prefix: str,
+    messages: list[str],
+    *,
+    expected: int,
+    expected_members: Optional[list[str]],
+) -> None:
+    remaining = max(0, expected - len(messages))
+    if remaining <= 0:
+        return
+
+    counts = Counter(str(message) for message in messages if str(message))
+    duplicates = sorted([member for member, count in counts.items() if count > 1])
+
+    if expected_members is None:
+        detail = f"{remaining} more sender(s)"
+        if duplicates:
+            detail += f"; duplicate sender(s) seen: {duplicates}"
+        print(f"{prefix} WAITING FOR {detail}")
+        return
+
+    received = set(counts)
+    missing = [member for member in expected_members if member not in received]
+    extras = sorted(received.difference(expected_members))
+    detail_parts = [repr(missing)]
+    if duplicates:
+        detail_parts.append(f"duplicate sender(s) seen: {duplicates}")
+    if extras:
+        detail_parts.append(f"unexpected sender(s) seen: {extras}")
+    detail = "; ".join(detail_parts)
+    print(f"{prefix} WAITING FOR {detail}")
 
 
 def _drain_idle_rf_sync_requests(runtime: RFSyncRuntime) -> None:
@@ -290,12 +361,12 @@ def run_rf_measurement(
     sync_experiment_id = _ensure_experiment_context(runtime, experiment_id)
     buffered_alive = runtime.buffered_alive
     runtime.buffered_alive = []
+    log_prefix = f"[rf-sync][exp {experiment_id}][meas {meas_id}]"
 
-    print(f"[rf-sync][exp {experiment_id}][meas {meas_id}] waiting for ALIVE quorum...")
+    print(f"{log_prefix} waiting for ALIVE quorum...")
     if buffered_alive:
         print(
-            f"[rf-sync][exp {experiment_id}][meas {meas_id}] "
-            f"using {len(buffered_alive)} buffered ALIVE message(s)"
+            f"{log_prefix} using {len(buffered_alive)} buffered ALIVE message(s)"
         )
     alive_messages = _wait_for_quorum(
         runtime.alive_socket,
@@ -304,27 +375,39 @@ def run_rf_measurement(
         timeout_s=timeout_s,
         phase="ALIVE",
         initial_messages=buffered_alive,
+        expected_members=runtime.last_alive_members,
+        log_prefix=f"{log_prefix}[ALIVE]",
     )
+    runtime.last_alive_members = sorted(set(alive_messages))
 
     if runtime.config.pre_sync_delay_s > 0:
         print(
-            f"[rf-sync][exp {experiment_id}][meas {meas_id}] "
-            f"waiting {runtime.config.pre_sync_delay_s:.2f}s before SYNC"
+            f"{log_prefix} waiting {runtime.config.pre_sync_delay_s:.2f}s before SYNC"
         )
         time.sleep(runtime.config.pre_sync_delay_s)
 
     sync_payload = f"{cycle_id} {sync_experiment_id}"
     runtime.sync_socket.send_string(sync_payload)
-    print(f"[rf-sync][exp {experiment_id}][meas {meas_id}] SYNC {sync_payload}")
+    print(f"{log_prefix} SYNC {sync_payload}")
 
-    print(f"[rf-sync][exp {experiment_id}][meas {meas_id}] waiting for DONE quorum...")
+    print(f"{log_prefix} waiting for DONE quorum...")
+    done_expected_members: Optional[list[str]]
+    if runtime.last_done_members:
+        done_expected_members = runtime.last_done_members
+    elif "PILOT" not in runtime.last_alive_members:
+        done_expected_members = runtime.last_alive_members
+    else:
+        done_expected_members = None
     done_messages = _wait_for_quorum(
         runtime.done_socket,
         runtime.done_poller,
         expected=expected,
         timeout_s=timeout_s,
         phase="DONE",
+        expected_members=done_expected_members,
+        log_prefix=f"{log_prefix}[DONE]",
     )
+    runtime.last_done_members = sorted(set(done_messages))
 
     active_tiles = sorted(set(alive_messages))
     _append_measurement_log(runtime, experiment_id, cycle_id, meas_id, active_tiles)
