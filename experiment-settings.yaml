@@ -13,7 +13,7 @@ server:
 heartbeat_interval: 10
 
 rf_sync:
-  num_subscribers: 100
+  num_subscribers: 98
   host: "*"
   sync_port: "5557"
   alive_port: "5558"
