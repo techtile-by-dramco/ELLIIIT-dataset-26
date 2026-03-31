@@ -1,0 +1,42 @@
+experiment: 20260313123010
+num_subscribers: 1
+measurments:
+  - meas_id: 0
+    active_tiles:
+     - A02
+  - meas_id: 1
+    active_tiles:
+     - A02
+  - meas_id: 2
+    active_tiles:
+     - A02
+  - meas_id: 3
+    active_tiles:
+     - A02
+  - meas_id: 4
+    active_tiles:
+     - A02
+  - meas_id: 5
+    active_tiles:
+     - A02
+  - meas_id: 6
+    active_tiles:
+     - A02
+  - meas_id: 7
+    active_tiles:
+     - A02
+  - meas_id: 8
+    active_tiles:
+     - A02
+  - meas_id: 9
+    active_tiles:
+     - A02
+  - meas_id: 10
+    active_tiles:
+     - A02
+  - meas_id: 11
+    active_tiles:
+     - A02
+  - meas_id: 12
+    active_tiles:
+     - A02

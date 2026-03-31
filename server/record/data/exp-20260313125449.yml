@@ -1,0 +1,6 @@
+experiment: 20260313125449
+num_subscribers: 1
+measurments:
+  - meas_id: 0
+    active_tiles:
+     - PILOT
