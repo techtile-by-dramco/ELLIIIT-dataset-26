@@ -144,6 +144,174 @@ def is_smb_path(storage_path: str) -> bool:
     return storage_path.startswith("\\\\") or storage_path.startswith("//")
 
 
+def dedupe_preserve_order(values: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def find_mount_dir_for_source(source: str) -> Path | None:
+    try:
+        with open("/proc/mounts", "r", encoding="utf-8") as mounts:
+            for line in mounts:
+                parts = line.split()
+                if len(parts) >= 2 and parts[0] == source:
+                    return Path(parts[1])
+    except FileNotFoundError:
+        return None
+    return None
+
+
+def build_mount_option_candidates_for_access(
+    experiment_config: dict[str, Any],
+    access_mode: str,
+) -> list[str]:
+    configured_version = runtime_storage.get_storage_setting(
+        experiment_config,
+        env_name="SMB_VERSION",
+        config_key="storage_smb_version",
+        default="3.0",
+    )
+    smb_versions = dedupe_preserve_order(
+        [str(configured_version), "3.1.1", "3.0", "2.1", "2.0", "1.0"]
+    )
+
+    base_options = [
+        access_mode,
+        f"uid={os.getuid()}",
+        f"gid={os.getgid()}",
+        "file_mode=0664",
+        "dir_mode=0775",
+    ]
+
+    credentials_file = runtime_storage.get_storage_setting(
+        experiment_config,
+        env_name="SMB_CREDENTIALS_FILE",
+        config_key="storage_credentials_file",
+    )
+    if credentials_file:
+        return [
+            ",".join(base_options + [f"vers={version}", f"credentials={credentials_file}"])
+            for version in smb_versions
+        ]
+
+    username = runtime_storage.get_storage_setting(
+        experiment_config,
+        env_name="SMB_USERNAME",
+        config_key="storage_username",
+    )
+    password = runtime_storage.get_storage_setting(
+        experiment_config,
+        env_name="SMB_PASSWORD",
+        config_key="storage_password",
+    )
+    domain = runtime_storage.get_storage_setting(
+        experiment_config,
+        env_name="SMB_DOMAIN",
+        config_key="storage_domain",
+    )
+
+    if username:
+        candidates = []
+        for version in smb_versions:
+            auth_options = base_options + [f"vers={version}", f"username={username}"]
+            if password is not None:
+                auth_options.append(f"password={password}")
+            else:
+                auth_options.append("password=")
+            if domain:
+                auth_options.append(f"domain={domain}")
+            candidates.append(",".join(auth_options))
+        return candidates
+
+    guest_variants = [
+        [f"vers={version}", "guest"] for version in smb_versions
+    ] + [
+        [f"vers={version}", "guest", "sec=none"] for version in smb_versions
+    ] + [
+        [f"vers={version}", "username=guest", "password="] for version in smb_versions
+    ] + [
+        [f"vers={version}", "username=guest", "password=", "sec=none"]
+        for version in smb_versions
+    ]
+    return dedupe_preserve_order(
+        [",".join(base_options + variant) for variant in guest_variants]
+    )
+
+
+def resolve_readable_storage_base(
+    storage_path: str,
+    settings_path: Path,
+    experiment_config: dict[str, Any],
+) -> Path:
+    source, relative_parts = runtime_storage.parse_storage_path(storage_path)
+    if source is None:
+        local_base = Path(storage_path).expanduser()
+        if not local_base.is_absolute():
+            local_base = (settings_path.parent / local_base).resolve()
+        return local_base
+
+    existing_mount_dir = find_mount_dir_for_source(source)
+    if existing_mount_dir is not None:
+        return existing_mount_dir.joinpath(*relative_parts)
+
+    mount_root = Path(
+        runtime_storage.get_storage_setting(
+            experiment_config,
+            env_name="SMB_MOUNT_ROOT",
+            config_key="storage_mount_root",
+            default=runtime_storage.DEFAULT_MOUNT_ROOT,
+        )
+    ).expanduser()
+    mount_dir = mount_root / runtime_storage.sanitize_mount_name(source)
+
+    try:
+        runtime_storage.ensure_cifs_mount(
+            source=source,
+            mount_dir=mount_dir,
+            mount_option_candidates=runtime_storage.build_mount_option_candidates(
+                experiment_config
+            ),
+        )
+    except RuntimeError as primary_error:
+        read_write_candidates = build_mount_option_candidates_for_access(
+            experiment_config,
+            access_mode="rw",
+        )
+        try:
+            runtime_storage.ensure_cifs_mount(
+                source=source,
+                mount_dir=mount_dir,
+                mount_option_candidates=read_write_candidates,
+            )
+        except RuntimeError as read_write_error:
+            read_only_candidates = build_mount_option_candidates_for_access(
+                experiment_config,
+                access_mode="ro",
+            )
+            try:
+                runtime_storage.ensure_cifs_mount(
+                    source=source,
+                    mount_dir=mount_dir,
+                    mount_option_candidates=read_only_candidates,
+                )
+            except RuntimeError as read_only_error:
+                raise RuntimeError(
+                    f"{primary_error}\n"
+                    "Expanded read/write extractor fallback also failed.\n"
+                    f"{read_write_error}\n"
+                    "Read-only extractor fallback also failed.\n"
+                    f"{read_only_error}\n"
+                    "If the share is already mounted somewhere else, pass that path with --data-root."
+                ) from read_only_error
+
+    return mount_dir.joinpath(*relative_parts)
+
+
 def resolve_data_root(args: argparse.Namespace, settings: dict[str, Any]) -> Path:
     if args.data_root is not None:
         data_root = args.data_root.expanduser().resolve()
@@ -169,7 +337,7 @@ def resolve_data_root(args: argparse.Namespace, settings: dict[str, Any]) -> Pat
                 raise FileNotFoundError(f"SMB path does not exist: {data_root}")
             return data_root
 
-        data_root = runtime_storage.prepare_storage_base(
+        data_root = resolve_readable_storage_base(
             storage_path=str(storage_path),
             settings_path=args.config_file.resolve(),
             experiment_config=experiment_config,
@@ -554,10 +722,6 @@ def find_cable_phase(
     return None
 
 
-def wrap_to_pi(angle: float) -> float:
-    return float((angle + np.pi) % (2.0 * np.pi) - np.pi)
-
-
 def build_csi_row(
     record: dict[str, Any],
     phi_cable_deg: float,
@@ -572,13 +736,8 @@ def build_csi_row(
         "experiment_id": record["experiment_id"],
         "cycle_id": record["cycle_id"],
         "hostname": record["hostname"],
-        "pilot_phase_rad": pilot_phase,
-        "pilot_amplitude": pilot_amplitude,
-        "phi_cable_deg": phi_cable_deg,
-        "csi_phase_rad": wrap_to_pi(float(np.angle(csi))),
         "csi_real": float(np.real(csi)),
         "csi_imag": float(np.imag(csi)),
-        "csi_abs": float(np.abs(csi)),
     }
 
 
@@ -699,26 +858,16 @@ def build_dataset(
         z[exp_idx, cyc_idx] = row["z"]
         position_available[exp_idx, cyc_idx] = row["position_available"]
 
-    pilot_phase = np.full(csi_shape, np.nan, dtype=np.float64)
-    pilot_amplitude = np.full(csi_shape, np.nan, dtype=np.float64)
-    phi_cable_deg = np.full(csi_shape, np.nan, dtype=np.float64)
-    csi_phase_rad = np.full(csi_shape, np.nan, dtype=np.float64)
     csi_real = np.full(csi_shape, np.nan, dtype=np.float64)
     csi_imag = np.full(csi_shape, np.nan, dtype=np.float64)
-    csi_abs = np.full(csi_shape, np.nan, dtype=np.float64)
     csi_available = np.zeros(csi_shape, dtype=np.float32)
 
     for row in csi_rows:
         exp_idx = exp_index[row["experiment_id"]]
         cyc_idx = cycle_index[int(row["cycle_id"])]
         host_idx = host_index[row["hostname"]]
-        pilot_phase[exp_idx, cyc_idx, host_idx] = row["pilot_phase_rad"]
-        pilot_amplitude[exp_idx, cyc_idx, host_idx] = row["pilot_amplitude"]
-        phi_cable_deg[exp_idx, cyc_idx, host_idx] = row["phi_cable_deg"]
-        csi_phase_rad[exp_idx, cyc_idx, host_idx] = row["csi_phase_rad"]
         csi_real[exp_idx, cyc_idx, host_idx] = row["csi_real"]
         csi_imag[exp_idx, cyc_idx, host_idx] = row["csi_imag"]
-        csi_abs[exp_idx, cyc_idx, host_idx] = row["csi_abs"]
         csi_available[exp_idx, cyc_idx, host_idx] = 1.0
 
     dataset = xr.Dataset(
@@ -727,13 +876,8 @@ def build_dataset(
             "rover_y": (("experiment_id", "cycle_id"), y),
             "rover_z": (("experiment_id", "cycle_id"), z),
             "position_available": (("experiment_id", "cycle_id"), position_available),
-            "pilot_phase_rad": (("experiment_id", "cycle_id", "hostname"), pilot_phase),
-            "pilot_amplitude": (("experiment_id", "cycle_id", "hostname"), pilot_amplitude),
-            "phi_cable_deg": (("experiment_id", "cycle_id", "hostname"), phi_cable_deg),
-            "csi_phase_rad": (("experiment_id", "cycle_id", "hostname"), csi_phase_rad),
             "csi_real": (("experiment_id", "cycle_id", "hostname"), csi_real),
             "csi_imag": (("experiment_id", "cycle_id", "hostname"), csi_imag),
-            "csi_abs": (("experiment_id", "cycle_id", "hostname"), csi_abs),
             "csi_available": (("experiment_id", "cycle_id", "hostname"), csi_available),
         },
         coords={
@@ -743,7 +887,10 @@ def build_dataset(
         },
         attrs={
             "description": "Rover positions and per-host CSI joined on experiment_id and cycle_id.",
-            "csi_definition": "CSI angle = pilot_phase_rad - deg2rad(phi_cable_deg).",
+            "csi_definition": (
+                "CSI is stored as csi_real + 1j * csi_imag. "
+                "Phase is np.angle(csi_real + 1j * csi_imag)."
+            ),
         },
     )
     return dataset
