@@ -1,0 +1,1 @@
+experiment_id,cycle_id,meas_id,move_status,position_status,captured_at_utc,position_t,x,y,z,position,rotation_matrix_json,error
