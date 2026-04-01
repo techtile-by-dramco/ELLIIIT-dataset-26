@@ -13,12 +13,12 @@ grid:
   y_start: 10.0         # first row
   x_end:   1240.0         # last column
   y_end:   1240.0         # last row
-  sweeps:        10       # total number of sweeps to generate
+  sweeps:        7       # total number of sweeps to generate
   start_spacing: 120.0   # spacing (mm) used for sweep 1
   decay:         0.75    # multiply spacing by this every odd sweep (>=3)
-  min_spacing:   20.0    # floor for spacing
+  min_spacing:   50.0    # floor for spacing
   start_sweep:   1       # resume from this sweep number (default 1)
 
-cycle_positions: false
+cycle_positions: true
 home_after_move: false
 verbose: false
