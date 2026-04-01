@@ -61,7 +61,12 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import zmq
 import yaml
-from PIL import Image, ImageDraw, ImageFont
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ModuleNotFoundError:
+    Image = None
+    ImageDraw = None
+    ImageFont = None
 
 CLIENT_ROOT = Path(__file__).resolve().parents[1]
 if str(CLIENT_ROOT) not in sys.path:
@@ -387,7 +392,17 @@ def _resolve_preview_output_path(config_path: Path, preview_output: Optional[str
     return preview_path
 
 
+def _require_pillow() -> tuple[Any, Any, Any]:
+    if Image is None or ImageDraw is None or ImageFont is None:
+        raise ModuleNotFoundError(
+            "Pillow is required only for --preview-sweeps. "
+            "Install python3-pil to render sweep previews."
+        )
+    return Image, ImageDraw, ImageFont
+
+
 def _load_preview_font(size: int, *, bold: bool = False) -> ImageFont.ImageFont:
+    _, _, image_font = _require_pillow()
     candidates = []
     if bold:
         candidates.extend(
@@ -407,11 +422,11 @@ def _load_preview_font(size: int, *, bold: bool = False) -> ImageFont.ImageFont:
 
     for candidate in candidates:
         try:
-            return ImageFont.truetype(candidate, size=size)
+            return image_font.truetype(candidate, size=size)
         except OSError:
             continue
 
-    return ImageFont.load_default()
+    return image_font.load_default()
 
 
 def _measure_text(
@@ -440,6 +455,7 @@ def _write_static_sweep_preview(
     config_path: Path,
     preview_output: Optional[str] = None,
 ) -> Path:
+    image_module, image_draw_module, _ = _require_pillow()
     sweep_data = build_sweep_plan(cfg)
     positions = [point for _, pts in sweep_data for point in pts]
     if not positions:
@@ -534,8 +550,8 @@ def _write_static_sweep_preview(
         f"Waypoints outside work area before clamp: {clamped_count}",
     ]
 
-    image = Image.new("RGBA", (int(canvas_width), int(canvas_height)), "#f8fafc")
-    draw = ImageDraw.Draw(image, "RGBA")
+    image = image_module.new("RGBA", (int(canvas_width), int(canvas_height)), "#f8fafc")
+    draw = image_draw_module.Draw(image, "RGBA")
     title_font = _load_preview_font(30, bold=True)
     subtitle_font = _load_preview_font(18)
     label_font = _load_preview_font(16, bold=True)
