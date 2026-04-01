@@ -609,11 +609,12 @@ This is the fastest way to verify:
 - the RF phase evolution
 - CSI-derived amplitude or power patterns
 
-Example animation:
+Example videos from the latest processed run:
 
-![Example RF phase and rover position animation](processing/phase_rover_EXP002.gif)
+- [Phase and rover position MP4](processing/phase_rover_EXP003.mp4)
+- [Power and rover position MP4](processing/power_rover_EXP003.mp4)
 
-This GIF shows one processed experiment as a cycle-by-cycle animation, with RF phase over the ceiling receiver aperture on the left and the rover position on the right.
+These MP4 files show one processed experiment as cycle-by-cycle animations, with RF phase or RF power over the ceiling receiver aperture on the top panel and the rover position on the bottom panel. The notebook now exports MP4 by default because generation is faster and the files are much smaller than the GIF versions.
 
 ### Step 7. Use the Detailed Reference When Needed
 
