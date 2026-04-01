@@ -1,340 +1,808 @@
-# Dataset Creation in Techtile
+# ELLIIIT Dataset Measurement and Processing Guide
 
-This repository contains the code and measurement flow used to build synchronized acoustic and RF datasets inside the Techtile environment.
+This repository contains the acquisition, orchestration, storage, and processing code used to collect the ELLIIIT acoustic and RF dataset inside Techtile.
 
-The documentation is split into two views:
+The README is organized in two views:
 
-- View 1 is for dataset users who mainly want to understand what was measured and how the data was collected at a high level.
-- View 2 is for people who want to run the code, debug the control plane, or extend the project.
+1. View 1 is a tutorial for dataset users who need to understand what was measured, how one measurement should be interpreted, and which files belong together.
+2. View 2 is a reference for operators and developers who need to deploy the system, run new acquisitions, or extend the control plane.
 
-<details>
-<summary><strong>1. Dataset Collection Overview for Data Users</strong></summary>
+## Contents
 
-## Overview
+1. [What This Repository Produces](#what-this-repository-produces)
+2. [What One Measurement Means](#what-one-measurement-means)
+3. [Physical Measurement Setup](#physical-measurement-setup)
+4. [Measurement Sequence](#measurement-sequence)
+5. [Data Products and File Locations](#data-products-and-file-locations)
+6. [How to Interpret and Join the Data](#how-to-interpret-and-join-the-data)
+7. [View 1 Tutorial: Using the Dataset](#view-1-tutorial-using-the-dataset)
+8. [View 2: Operator and Developer Reference](#view-2-operator-and-developer-reference)
+9. [Runtime Architecture](#runtime-architecture)
+10. [Configuration Files](#configuration-files)
+11. [Deployment and Acquisition](#deployment-and-acquisition)
+12. [RF Post-Processing](#rf-post-processing)
+13. [Operational Utilities](#operational-utilities)
 
-The dataset combines multi-microphone ultrasonic measurements with distributed RF measurements, sampled over a dense three-dimensional spatial grid inside Techtile.
+## What This Repository Produces
 
-Each measurement snapshot is paired with ground-truth position information from a Qualisys motion capture system. This provides reproducible geometry for both the ultrasonic speaker and the RF user-equipment antenna.
+The project collects paired measurements from two sensing modalities:
 
-## Joint Acoustic and RF Measurement Setup
+- Acoustic measurements from a distributed microphone array using an NI DAQ and chirp excitation.
+- RF measurements from distributed USRP-based receivers and transmitters inside Techtile.
 
-The ultrasonic speaker and the RF UE antenna are mechanically co-located and mounted on the same positioning rig. They move jointly through the measurement volume so that each sampled point has a direct acoustic and RF counterpart.
+The acoustic source and RF user-equipment antenna are mounted on the same moving rig. At each rover stop, the system records:
 
-![holder](holder.jpg)
+- A rover position command and completion event.
+- A Qualisys position sample captured after the move.
+- One acoustic measurement.
+- One RF measurement cycle.
 
-This gives:
+This means the dataset is spatially paired:
 
-- Spatial alignment between acoustic and RF observations
-- A shared geometric reference for both modalities
-- Ground-truth 3D position information for each snapshot
+- The acoustic and RF observations correspond to the same rig pose.
+- The position sample is captured before the acoustic and RF measurements for that pose.
+- Acoustic and RF are not acquired simultaneously with each other. They are acquired sequentially at the same position.
 
-## Acoustic Data
+## What One Measurement Means
 
-The acoustic side uses the Techtile DAQ infrastructure for synchronized excitation and capture.
+The most important concept in this repository is the orchestrator cycle.
 
-- An omnidirectional ultrasonic speaker is placed at each grid point.
-- Roughly 80 microphones distributed through the walls and ceiling record the wavefield.
-- A shared DAQ clock and trigger provide coherent, phase-consistent sampling across channels.
+In the current control flow, one cycle means:
 
-For each position, the acoustic dataset contains:
+1. Move the rover to the next configured waypoint.
+2. Wait for the rover to report `MOVE_DONE`.
+3. Capture one Qualisys position sample.
+4. Trigger one acoustic measurement.
+5. Trigger one RF measurement cycle.
 
-- Raw multi-channel received chirp recordings
-- Time-synchronized microphone captures
-- Metadata such as timestamps and absolute speaker position
+Identifiers used throughout the system:
 
-Post-processing reconstructs impulse responses and propagation structure from the synchronized recordings.
+- `experiment_id`: the logical run identifier configured in `server/serverConfig.yaml`.
+- `cycle_id`: the sequential index of the orchestrator loop.
+- `meas_id`: the sequential measurement index sent in the protocol.
 
-## RF Data
+In the current implementation, `cycle_id` and `meas_id` both increment once per loop and are usually equal, but they should still be treated as separate fields because the code keeps both.
 
-The RF side combines multiple distributed antenna groups inside Techtile.
+Practical interpretation:
 
-- The ceiling array supports phase-calibrated measurements.
-- The wall arrays support time- and frequency-synchronized measurements without global phase calibration.
-- Narrowband pilot signaling is used to derive stable amplitude and phase information.
+- One row in `exp-<experiment_id>-positions.csv` corresponds to one rover stop and one later acoustic/RF acquisition pair.
+- One RF JSON-line record with a given `experiment_id` and `cycle_id` should be joined to the position row with the same pair.
+- Acoustic captures are triggered once per cycle as well, but the saved acoustic CSV filenames currently use timestamps rather than `experiment_id` or `cycle_id`.
 
-For each position, the RF dataset contains:
+## Physical Measurement Setup
 
-- Raw complex IQ samples
-- Multi-antenna synchronized captures
-- Calibration-related data for the calibrated RF aperture
-- Absolute UE antenna position from Qualisys
+The measurement rig combines:
 
-## Measurement Procedure
+- An ultrasonic speaker for the acoustic channel.
+- An RF UE antenna for the RF channel.
+- A common mechanical mount so both modalities share the same sampled location.
 
-Measurements are taken on a three-dimensional spatial grid. At each point:
+Ground-truth position is provided by the Qualisys system configured in the `positioning` block of `experiment-settings.yaml`.
 
-1. The shared acoustic and RF rig moves to the next position.
-2. A ground-truth position sample is captured.
-3. An acoustic measurement is recorded.
-4. An RF measurement is recorded.
+The RF infrastructure includes:
 
-This produces paired acoustic and RF measurements with known geometry.
+- Ceiling and wall tile workers started from `client_scripts` in `experiment-settings.yaml`.
+- A continuous reference transmitter from `client/run-ref.py`.
+- A dedicated RF synchronization layer using PUB/REP sockets.
 
-## Artificial Path and Trajectory Construction
+For the reciprocity dataset path in this repository, the active RF aperture is the ceiling group:
 
-Because the dataset consists of dense, static, geometrically referenced samples, it can be re-sampled into synthetic motion trajectories. A synthetic trajectory is built by ordering static grid positions as if they were successive time steps.
+- 42 ceiling receiver tiles: `A05` through `G10`, i.e. the 7-by-6 ceiling block defined in the Techtile inventory.
+- 1 synchronized pilot transmitter, which makes `rf_sync.num_subscribers = 43` in `experiment-settings.yaml`.
+- 1 separate continuous reference transmitter started by `client/run-ref.py`; this reference host is part of the outer orchestrator readiness check, but not part of the `ALIVE`/`DONE` count used by the RF fan-out cycle.
 
-Each selected point provides:
+External geometry references:
 
-- Coherent RF IQ data
-- Coherent acoustic impulse responses
-- Absolute ground-truth position
+- Ceiling group membership: <https://github.com/techtile-by-dramco/tile-management/blob/main/inventory/hosts.yaml>
+- Per-tile RF channel coordinates and normals: <https://github.com/techtile-by-dramco/plotter/blob/main/src/TechtilePlotter/positions.yml>
 
-## Unique Aspects of the Dataset
+Important interpretation detail:
 
-- Joint acoustic and RF sensing on one shared moving rig
-- Dense three-dimensional spatial sampling
-- Absolute Qualisys ground-truth positioning
-- DAQ-synchronized acoustic acquisition
-- Combination of coherent and non-coherent RF apertures
-- Static measurements that can be re-used as synthetic trajectories
+- The repository stores one RF summary row per receiver host and per cycle.
+- The external geometry file lists two RF channels per ceiling tile.
+- The current processed dataset therefore represents 42 receiver hosts per fully populated cycle, not a separate stored CSI row for every physical RF connector in `positions.yml`.
 
-</details>
+The acoustic infrastructure includes:
 
-<details>
-<summary><strong>2. Internal Workings, Deployment, and Extension Guide</strong></summary>
+- An NI DAQ-based excitation and capture pipeline in `acoustic/acousticMeasurement.py`.
+- A ZMQ-triggered acoustic client in `acoustic/ZMQclient_acoustic.py`.
+- Distributed microphone definitions in `acoustic/dicts.py`.
 
-## Architecture
+## Measurement Sequence
 
-There are two distinct layers in this project:
+The outer measurement sequence is implemented in `server/zmq_orchestrator.py`.
 
-1. The deployment layer, based on `experiment-settings.yaml`, `server/update-experiment.py`, and `server/run-clients.py`, installs and starts long-running worker scripts on the selected tiles.
-2. The orchestration layer, based on `server/zmq_orchestrator.py`, coordinates one full measurement cycle across rover, acoustic, reference, and RF services.
-
-`server/zmq_orchestrator.py` is launched separately. It is not started automatically by `server/run-clients.py`.
-
-## Bootstrap and Deployment
-
-Clone the repository:
-
-```bash
-git clone https://github.com/techtile-by-dramco/ELLIIIT-dataset-26.git
-```
-
-Bootstrap the server virtual environment and pull tile-management dependencies:
-
-```bash
-cd ELLIIIT-dataset-26/server
-./setup-server.sh
-source bin/activate
-cd ..
-```
-
-Configure `experiment-settings.yaml`:
-
-- Set `server.host` to the host name or IP that tile workers should use.
-- Select tile group(s) under `tiles`.
-- Configure RF parameters and `rf_sync`.
-- Define tile-side services in `client_scripts`.
-- Set any required `extra_packages`.
-- Configure the `positioning` block if you want post-move Qualisys logging from the orchestrator.
-
-`server/update-experiment.py` reads `client_scripts`. The older top-level `client_script_name` and `client_script_args` fields remain legacy compatibility fields and are not used by the multi-script deployment path.
-
-Prepare tiles:
-
-```bash
-python server/setup-clients.py --ansible-output
-```
-
-Optional flags:
-
-- `--skip-apt`
-- `--repos-only`
-- `--install-only`
-- `--check-uhd-only`
-
-Push code and settings to tiles:
-
-```bash
-python server/update-experiment.py --ansible-output
-```
-
-Start or stop the tile-side services:
-
-```bash
-python server/run-clients.py --start
-# or
-python server/run-clients.py --stop
-```
-
-## Orchestrated Run
-
-For a full orchestrated experiment, the following long-lived processes are expected:
-
-```bash
-# tile-side workers from experiment-settings.yaml
-python server/update-experiment.py --ansible-output
-python server/run-clients.py --start
-
-# outer control plane
-python server/zmq_orchestrator.py server --config server/serverConfig.yaml --experiment-settings experiment-settings.yaml
-python acoustic/ZMQclient_acoustic.py --id acoustic
-python client/rover/ZMQclient_rover.py --config-file client/rover/config.yaml
-python server/record/RF-orchestrator.py --id rf --experiment-settings experiment-settings.yaml
-```
-
-If `--connect` is omitted, the ZMQ clients derive the orchestrator endpoint from `server.host` and `server.orchestrator_port` in `experiment-settings.yaml`.
-
-## Runtime Roles
-
-Important distinctions between the runtime processes:
-
-- `server/zmq_orchestrator.py` is the outer ROUTER-based coordinator.
-- `server/record/RF-orchestrator.py` is the `rf` client as seen by `server/zmq_orchestrator.py`.
-- `client/run_reciprocity.py`, `client/run_uncalibrated.py`, and `client/usrp_pilot.py` are RF tile workers started via `client_scripts`. They are not the outer `rf` client.
-- `client/run-ref.py` is a continuous support transmitter and the mandatory `ref` readiness client.
-- `client/rover/ZMQclient_rover.py` is the rover client used by the orchestrator.
-- `client/rover/simulate_roverMove.py` is only a standalone rover test script.
-- `server/run_server.py` and `server/utils/server_com.py` are the older server messaging path using `server.messaging_port` and `server.sync_port`, not the outer `server/zmq_orchestrator.py` ROUTER port.
-
-## Detailed Measurement Procedure
-
-### Spatial Sampling
-
-Measurements are performed on a three-dimensional grid with discrete intervals in `x`, `y`, and `z`. The ultrasonic speaker and RF UE antenna move together, so every measurement index maps to one shared physical location.
-
-### Schematic Flow
+Per cycle:
 
 ```text
-Per cycle (cycle_id = k, experiment_id = EXP):
-
-  zmq_orchestrator
-      |
-      |-- MOVE -----------------------> rover client
-      |<------------------------- MOVE_DONE
-      |
-      |-- capture position sample ----> exp-<id>-positions.csv
-      |
-      |-- START_MEAS -----------------> acoustic client
-      |<------------------------- MEAS_DONE
-      |
-      |-- START_MEAS -----------------> RF-orchestrator client
-                                      |
-                                      |-- wait ALIVE x N on alive_port
-                                      |-- wait pre_sync_delay_s
-                                      |-- publish SYNC "<cycle_id> <experiment_id>" on sync_port
-                                      |-- wait DONE  x N on done_port
-                                      |-- append server/record/data/exp-<experiment_id>.yml
-      |<------------------------- MEAS_DONE
+orchestrator
+  -> MOVE to rover
+  <- MOVE_DONE
+  -> capture one Qualisys position sample
+  -> START_MEAS to acoustic client
+  <- MEAS_DONE
+  -> START_MEAS to RF orchestrator
+  <- MEAS_DONE
 ```
 
-### Control-Plane Handshake
+Important interpretation details:
 
-There is no literal `OK` message in the outer protocol. Progress is controlled by message types and matching IDs:
+- The position sample is taken after the rover has reached the commanded waypoint.
+- The acoustic and RF measurements are then performed while the rig is assumed to remain at that location.
+- The RF cycle contains its own internal synchronization with the tile workers.
 
-- Reference host: sends one `HELLO` as `ref`, then responds to periodic `PING` with `PONG`.
-- Rover host: receives `MOVE`, executes the motion, and replies `MOVE_DONE`.
-- Acoustic host: receives `START_MEAS`, performs one acoustic capture, and replies `MEAS_DONE`.
-- RF orchestrator host: receives `START_MEAS`, runs one RF fan-out cycle, and replies `MEAS_DONE`.
-- RF tile workers: send `ALIVE`, wait for `SYNC "<cycle_id> <experiment_id>"`, perform one local RF action, then send `DONE`.
+### RF Sub-Sequence
 
-Fixed outer identities:
+Per `START_MEAS` to `server/record/RF-orchestrator.py`:
 
-- `ref` for `client/run-ref.py`
-- `rover` for [`client/rover/ZMQclient_rover.py`](/mnt/c/Users/Calle/OneDrive/Documenten/GitHub/ELLIIIT-dataset-26/client/rover/ZMQclient_rover.py)
-- `acoustic` for [`acoustic/ZMQclient_acoustic.py`](/mnt/c/Users/Calle/OneDrive/Documenten/GitHub/ELLIIIT-dataset-26/acoustic/ZMQclient_acoustic.py)
-- `rf` for [`server/record/RF-orchestrator.py`](/mnt/c/Users/Calle/OneDrive/Documenten/GitHub/ELLIIIT-dataset-26/server/record/RF-orchestrator.py)
+1. Wait for `rf_sync.num_subscribers` ALIVE messages on `rf_sync.alive_port`.
+2. Wait `rf_sync.pre_sync_delay_s` seconds.
+3. Publish one `SYNC` message on `rf_sync.sync_port` with payload `<cycle_id> <experiment_id>`.
+4. Wait for `rf_sync.num_subscribers` DONE messages on `rf_sync.done_port`.
+5. Append a measurement entry to `server/record/data/exp-<experiment_id>.yml`.
 
-### Position Logging
+This RF cycle produces one logically synchronized RF snapshot across the participating tiles.
 
-When the `positioning` block is enabled in `experiment-settings.yaml`, `server/zmq_orchestrator.py` captures a position sample immediately after each successful rover move and appends it to `server/record/data/exp-<experiment_id>-positions.csv`.
+## Data Products and File Locations
 
-That log contains:
+The repository writes several different outputs. The files do not all serve the same purpose.
 
-- Experiment, cycle, and measurement identifiers
-- Move status
-- Position status and timestamp
-- `x`, `y`, and `z`
-- A combined `position` field
-- Rotation matrix data when available
+### 1. Rover Position Log
 
-## RF Synchronization Internals
+Written by:
 
-For orchestrated runs, RF synchronization is handled inside `server/record/RF-orchestrator.py` during each `START_MEAS` command from `server/zmq_orchestrator.py`.
+- `server/zmq_orchestrator.py`
 
-Per `START_MEAS`, exactly one RF cycle is executed:
+Location:
 
-1. Wait for `rf_sync.num_subscribers` ALIVE messages on `rf_sync.alive_port` (default `5558`).
-2. Wait `rf_sync.pre_sync_delay_s` seconds to avoid PUB/SUB slow-joiner loss.
-3. Publish one `SYNC` message on `rf_sync.sync_port` (default `5557`) with payload `<cycle_id> <experiment_id>`.
-4. Wait for `rf_sync.num_subscribers` DONE messages on `rf_sync.done_port` (default `5559`).
+- `server/record/data/exp-<experiment_id>-positions.csv`
 
-`experiment_id` is supplied by the outer orchestrator and reused in `server/record/data/exp-<experiment_id>.yml`.
+Meaning:
 
-The RF worker mode is selected per tile group in `experiment-settings.yaml` under `client_scripts`:
+- One row per completed rover move.
+- This is the main file used to recover the physical pose for each orchestrator cycle.
 
-- `client/run_reciprocity.py`: receives one pilot RX capture and appends one JSON-line result record per successful RF capture to `data_<HOSTNAME>_<experiment_id>.txt`. The active path no longer stores raw IQ captures.
-- `client/run_uncalibrated.py`: receives one pilot RX capture and appends the same JSON-line result schema to `data_<HOSTNAME>_<experiment_id>.txt`. It also no longer stores raw IQ captures in the active path.
-- `client/usrp_pilot.py`: transmits the configured pilot waveform for the selected phase.
-- `client/run-ref.py`: provides the continuous reference transmission and readiness registration used by the outer control plane.
+Important columns:
 
-For both `client/run_reciprocity.py` and `client/run_uncalibrated.py`, each successful RF capture stores:
+- `experiment_id`
+- `cycle_id`
+- `meas_id`
+- `move_status`
+- `position_status`
+- `captured_at_utc`
+- `position_t`
+- `x`, `y`, `z`
+- `position`
+- `rotation_matrix_json`
+- `error`
+
+Typical usage:
+
+- Join RF rows on `(experiment_id, cycle_id)`.
+- Use `position_status == ok` or `position_available == 1` in processed data to filter valid positions.
+
+### 2. RF Measurement Log
+
+Written by:
+
+- `client/run_reciprocity.py`
+- `client/run_uncalibrated.py`
+
+Location:
+
+- Per-host runtime output directory resolved from `experiment_config.storage_path`
+- File pattern: `data_<HOSTNAME>_<experiment_id>.txt`
+
+Meaning:
+
+- Each line is a JSON record for one RF measurement on one host.
+- The records contain the identifiers needed to join measurements back to rover positions.
+- The active path stores per-cycle summary metrics, not raw IQ captures.
+
+Typical fields per successful line:
 
 - `timestamp_utc`
 - `hostname`
-- `file_name` as `data_<HOSTNAME>_<experiment_id>_<cycle_id>`
+- `file_name`
 - `experiment_id`
 - `cycle_id`
-- `pilot_phase` in radians
-- `pilot_phase_deg` in degrees
+- `pilot_phase`
+- `pilot_phase_deg`
 - `pilot_amplitude`
-- `avg_amplitude_ch0` and `avg_amplitude_ch1`
-- `rms_amplitude_ch0` and `rms_amplitude_ch1`
-- `max_i_ch0`, `max_i_ch1`, `max_q_ch0`, and `max_q_ch1`
-- `freq_offset_ch0_before_hz`, `freq_offset_ch0_after_hz`, `freq_offset_ch1_before_hz`, and `freq_offset_ch1_after_hz`
+- `avg_amplitude_ch0`
+- `avg_amplitude_ch1`
+- `rms_amplitude_ch0`
+- `rms_amplitude_ch1`
 - `captured_samples`
 
-Both scripts also append JSON-line runtime diagnostics to `error.log`. Each error entry stores:
+Interpretation:
+
+- Each host writes its own local view of the same RF cycle.
+- The full RF aperture is reconstructed later by grouping rows with the same `experiment_id` and `cycle_id` across hostnames.
+- In a fully populated reciprocity run, that means up to 42 ceiling receiver rows per cycle.
+- The synchronized pilot transmitter participates in the RF timing handshake, but it does not write the receiver-side RF summary rows described here.
+
+### 3. RF Runtime Error Log
+
+Written by:
+
+- `client/run_reciprocity.py`
+- `client/run_uncalibrated.py`
+
+Location:
+
+- Per-host runtime output directory
+- File name: `error.log`
+
+Meaning:
+
+- JSON-line diagnostics for failed or suspect RF captures.
+- Useful for debugging missing CSI, metadata errors, clock lock issues, and capture anomalies.
+
+Typical fields:
 
 - `timestamp_utc`
 - `hostname`
 - `error_type`
 - `message`
-- `experiment_id`, `cycle_id`, and `file_name` when that context is available
-- any extra error-specific fields, such as `capture_type`, buffer sizes, metadata error names, or numeric measurements related to the failure
+- `experiment_id`
+- `cycle_id`
+- `file_name`
 
-## RF Processing
+### 4. RF Orchestrator Summary Log
 
-Position logs are written by the orchestrator to `server/record/data/exp-<experiment_id>-positions.csv`.
+Written by:
 
-The legacy CSI extraction helper is [`processing/extract_csi_from_smb.py`](/mnt/c/Users/Calle/OneDrive/Documenten/GitHub/ELLIIIT-dataset-26/processing/extract_csi_from_smb.py). It builds one xarray/NetCDF file by:
+- `server/record/RF-orchestrator.py`
 
-- scanning each hostname folder for measurement archives named `data_<HOSTNAME>_<experiment_id>_<cycle_id>*.npz`
-- extracting `pilot_phase` and `pilot_amplitude` directly when present, or deriving them from legacy `pilot_iq` stored inside the archive
-- applying the cable correction from `client/ref-RF-cable.yml`
-- joining RF CSI with rover positions on `experiment_id` and `cycle_id`
-- writing a dataset with `csi_real`, `csi_imag`, `rover_x`, `rover_y`, `rover_z`, and availability masks
+Location:
 
-Useful commands:
+- `server/record/data/exp-<experiment_id>.yml`
 
-```bash
-python processing/extract_csi_from_smb.py
-python processing/extract_csi_from_smb.py --max-measurements 10
-python processing/extract_csi_from_smb.py --data-root /path/to/data/root
+Meaning:
+
+- One YAML summary file per experiment.
+- Records which tiles were active for each RF cycle.
+
+Typical contents:
+
+- `experiment`
+- `num_subscribers`
+- `measurements`
+  - `meas_id`
+  - `cycle_id`
+  - `experiment_id`
+  - `active_tiles`
+
+Use this file to verify:
+
+- Which RF workers participated in a given cycle.
+- Whether a missing host measurement is due to a worker not being active.
+
+### 5. Acoustic Capture Files
+
+Written by:
+
+- `acoustic/acousticMeasurement.py`
+
+Location:
+
+- `acoustic/results/Measured_Signal_<timestamp>.csv`
+
+Meaning:
+
+- One CSV per acoustic acquisition.
+- Each row stores one microphone channel or the chirp excitation itself.
+
+Columns:
+
+- `duration`
+- `f_start`
+- `f_stop`
+- `chirp_amp`
+- `microphone_coordinates`
+- `microphone_label`
+- `values`
+
+Interpretation:
+
+- `values` contains either the saved ESS response or an RIR-like derived signal depending on `acoustic/config.json`.
+- Unused or faulty channels are stored with `values = "unused"`.
+- The final row contains the transmitted `chirp_excitation`.
+
+Important caveat:
+
+- The current acoustic file naming is timestamp-based only.
+- `experiment_id`, `cycle_id`, and `meas_id` are visible in `acoustic/ZMQclient_acoustic.py` logs, but they are not embedded into the acoustic CSV filename or CSV rows by `run_acoustic_measurement()`.
+- If you need exact cycle-to-acoustic-file matching, you currently need to use acquisition order, timestamps, and acoustic client logs together.
+
+### 6. Preview and Rover Planning Outputs
+
+Written by:
+
+- `client/rover/ZMQclient_rover.py --preview-sweeps`
+
+Location:
+
+- `client/rover/config_sweep_preview.png` by default
+
+Meaning:
+
+- Static preview of the configured rover sweep pattern.
+- This is a planning and validation artifact, not measurement data.
+
+## How to Interpret and Join the Data
+
+### The Main Join Key
+
+For RF and position data, the main join key is:
+
+- `(experiment_id, cycle_id)`
+
+That join is exactly what `processing/extract_csi_from_smb_v2.py` uses.
+
+### What Is Synchronized and What Is Not
+
+The dataset has several layers of synchronization:
+
+- Acoustic microphones are synchronized within one acoustic capture.
+- RF workers are synchronized within one RF cycle.
+- Acoustic and RF are paired by rover position and orchestration order, not acquired at the exact same instant.
+- The position sample is captured immediately after motion completion and before both sensing modalities.
+
+This means:
+
+- Cross-microphone timing within acoustic data is meaningful.
+- Cross-host RF phase and amplitude interpretation depends on the worker mode and cable correction.
+- Cross-modality fusion should be treated as same-pose pairing, not necessarily same-instant timing.
+
+### RF Aperture and Geometry
+
+For the reciprocity measurement path, the RF data should be read as a ceiling-receiver dataset:
+
+- The intended receiver aperture is the 42 ceiling tiles `A05` to `G10`.
+- The synchronized RF cycle also includes one pilot transmitter node, giving 43 `ALIVE`/`DONE` participants in total.
+- Exact tile membership is maintained in the Techtile inventory:
+  - <https://github.com/techtile-by-dramco/tile-management/blob/main/inventory/hosts.yaml>
+- Exact RF channel coordinates are maintained in the Techtile plotter geometry:
+  - <https://github.com/techtile-by-dramco/plotter/blob/main/src/TechtilePlotter/positions.yml>
+
+When using those geometry files, keep in mind:
+
+- Each ceiling tile has two RF channels in the geometry definition.
+- The active acquisition path in this repository stores one summarized complex pilot measurement per receiver host and cycle.
+- In other words, the dataset currently behaves as a 42-node ceiling receiver aperture with one stored complex value per node and per cycle.
+
+### RF Signalling and Timing
+
+The RF path uses two transmitters with different roles.
+
+1. Continuous reference transmitter
+
+- `client/run-ref.py` runs as a long-lived process on the reference node.
+- In the current experiment settings it transmits a continuous sine at:
+  - center frequency `920e6`
+  - sample rate `250e3`
+  - baseband waveform frequency `0`
+  - amplitude `0.8`
+  - gain `73`
+- This process also registers itself as the `ref` client for the outer orchestrator heartbeat.
+
+2. Per-cycle pilot transmitter
+
+- `client/usrp_pilot.py` is the synchronized pilot source triggered by the RF fan-out cycle.
+- After receiving `SYNC`, it resets its USRP time to `0` on the next PPS edge, waits 2 seconds, tunes at `t = 3 s`, and starts the pilot TX at `t = 5 s`.
+- The configured pilot TX duration is 10 seconds.
+- In the current settings the transmitted pilot phase is `0` and the active TX amplitude is `0.8`.
+
+3. Ceiling receiver timing
+
+- `client/run_reciprocity.py` follows the same PPS-based reset and tuning sequence after each `SYNC`.
+- The ceiling receivers tune at `t = 3 s`.
+- The pilot receive capture starts at `t = 6 s` and lasts 5 seconds.
+- This gives a 1-second guard interval between pilot-TX start and pilot-RX start, and the 5-second receive window lies inside the 10-second pilot transmission.
+
+4. Why the received signal appears as a 1 kHz tone
+
+- Both `client/usrp_pilot.py` and `client/run-ref.py` transmit at `920 MHz`.
+- The receivers in `client/run_reciprocity.py` are intentionally tuned to `freq - 1e3`, i.e. `919.999 MHz`.
+- As a result, a received carrier at `920 MHz` appears in complex baseband as an approximately `1 kHz` tone.
+- The phase extraction helper therefore band-pass filters around `1 kHz ± 100 Hz`.
+- In the current channel mapping, the software treats RX channel 0 as the reference channel and RX channel 1 as the measurement channel.
+
+For the active JSON-based RF path:
+
+- `pilot_phase` is the measured phase before cable correction.
+- `processing/extract_csi_from_smb_v2.py` subtracts the cable phase from `client/ref-RF-cable.yml`.
+- The complex CSI is formed as:
+  - `csi = pilot_amplitude * exp(1j * (pilot_phase - phi_cable))`
+
+The processed NetCDF stores:
+
+- `csi_real`
+- `csi_imag`
+- `csi_available`
+
+Reconstruct complex CSI in analysis as:
+
+```python
+csi = ds["csi_real"] + 1j * ds["csi_imag"]
+phase = np.angle(csi)
+amplitude = np.abs(csi)
 ```
 
-On Windows, `processing/extract_csi_from_smb.py` defaults `--data-root` to the UNC network path `\\10.128.48.9\elliit`.
+### How the RF Phase Angle Is Computed
 
-For the active JSON-based RF output format, use [`processing/extract_csi_from_smb_v2.py`](/mnt/c/Users/Calle/OneDrive/Documenten/GitHub/ELLIIIT-dataset-26/processing/extract_csi_from_smb_v2.py). It:
+The stored RF "angle" is a complex phase angle in radians. It is not an angle-of-arrival estimate.
 
-- scans each hostname folder for result files named `data_<HOSTNAME>_*.json`, `*.jsonl`, `*.txt`, or `*.log`
-- reads the JSON records written by the active RF workers
-- applies the same cable correction and position join as the legacy extractor
-- ignores position-only experiments or cycles that have no extracted CSI rows
-- writes the NetCDF dataset to `processing/csi_<experiment_id>.nc` by default (or joins multiple experiment IDs when one dataset spans more than one)
+For each receiver host in `client/run_reciprocity.py`:
+
+1. A 5-second capture is recorded on the two RX channels.
+2. The first second is discarded for analysis, leaving a steadier window.
+3. Each channel is band-pass filtered around the expected 1 kHz beat note in `client/tools.py`.
+4. Instantaneous phase is taken from the filtered complex samples.
+5. The per-sample phase difference is formed as:
+
+```python
+phase_diff = wrap_to_pi(angle(ch0) - angle(ch1))
+```
+
+6. The stored `pilot_phase` is the circular mean of that wrapped phase difference.
+7. The stored `pilot_amplitude` is the RMS amplitude of the channel-1 samples over the analysis window.
+
+This is the same logic as:
+
+```python
+phase_ch0, _, _ = tools.get_phases_and_apply_bandpass(iq_samples[0, :])
+phase_ch1, _, _ = tools.get_phases_and_apply_bandpass(iq_samples[1, :])
+phase_diff = tools.to_min_pi_plus_pi(phase_ch0 - phase_ch1, deg=False)
+pilot_phase = tools.circmean(phase_diff, deg=False)
+pilot_amplitude = np.sqrt(np.mean(np.abs(iq_samples[1, :]) ** 2))
+```
+
+Post-processing then converts that stored magnitude/phase pair into a complex CSI value and subtracts the per-host cable calibration phase from `client/ref-RF-cable.yml`.
+
+Practical consequence:
+
+- `pilot_phase` is a calibrated channel phase surrogate, not a geometric direction estimate.
+- If you want an actual angle-of-arrival or beam direction, that must be estimated later from the spatial geometry of multiple ceiling receivers together.
+
+### Position Interpretation
+
+The position file stores the Qualisys output after each rover move.
+
+Key points:
+
+- `move_status` tells you whether the rover phase succeeded.
+- `position_status` tells you whether the positioner returned valid data.
+- `x`, `y`, `z` are the ground-truth pose used by the processing script.
+
+In the processed NetCDF:
+
+- `rover_x`
+- `rover_y`
+- `rover_z`
+- `position_available`
+
+are indexed by `experiment_id` and `cycle_id`.
+
+### Acoustic Interpretation
+
+The acoustic CSV is currently less integration-friendly than the RF data because it is not keyed directly by `experiment_id` and `cycle_id`.
+
+Use it as follows:
+
+- Treat each CSV as one acoustic measurement event.
+- Use file timestamps and acoustic client logs to place it in run order.
+- Interpret the channel rows using `microphone_label` and `microphone_coordinates`.
+- Use the final `chirp_excitation` row for deconvolution or verification if needed.
+
+## View 1 Tutorial: Using the Dataset
+
+If you only want to use the measured data, read this section from top to bottom. The goal of View 1 is simple: start from one experiment, find the files that belong together, build the RF-plus-position dataset, and understand how to interpret the acoustic files alongside it.
+
+### Step 1. Start From One Experiment
+
+1. Pick the `experiment_id` you want to analyze.
+2. Open `server/record/data/exp-<experiment_id>-positions.csv`.
+3. Find the RF host result files named `data_<HOSTNAME>_<experiment_id>.txt` under the runtime storage root configured by `experiment_config.storage_path`.
+4. If you also need acoustic data, collect the timestamped CSV files from `acoustic/results/`.
+
+At this point, the most important rule is:
+
+- RF data and position data join directly on `(experiment_id, cycle_id)`.
+- Acoustic data is also recorded once per cycle, but it currently has to be matched by run order, timestamps, and logs rather than by an embedded `cycle_id`.
+
+### Step 2. Understand What One Row Means
+
+Before joining anything, keep this mental model in mind:
+
+1. One orchestrator cycle means one rover pose.
+2. That pose gets one Qualisys position sample.
+3. That same pose then gets one acoustic capture.
+4. That same pose then gets one RF measurement cycle.
+
+In practice:
+
+- One row in `exp-<experiment_id>-positions.csv` is one rover stop.
+- One RF JSON-line record with the same `experiment_id` and `cycle_id` belongs to that stop.
+- For the reciprocity path, a fully populated cycle can contain up to 42 ceiling receiver rows, one per ceiling host.
+
+### Step 3. Build the RF and Position Dataset
+
+Run the extractor:
+
+```bash
+python processing/extract_csi_from_smb_v2.py
+```
+
+Useful variants:
+
+```bash
+python processing/extract_csi_from_smb_v2.py --max-measurements 10
+python processing/extract_csi_from_smb_v2.py --data-root /path/to/storage/root
+python processing/extract_csi_from_smb_v2.py --positions-root server/record/data
+```
+
+What this does:
+
+1. It reads the per-host RF result files.
+2. It extracts `experiment_id`, `cycle_id`, `hostname`, `pilot_phase`, and `pilot_amplitude`.
+3. It applies the cable-phase correction from `client/ref-RF-cable.yml`.
+4. It joins the RF rows with the rover position file.
+5. It writes `processing/csi_<experiment_id>.nc`.
+
+### Step 4. Open the NetCDF and Read It Correctly
+
+Once `processing/csi_<experiment_id>.nc` exists, open it in xarray and use these axes:
+
+- `experiment_id`
+- `cycle_id`
+- `hostname`
+
+The most important variables are:
+
+- `rover_x`, `rover_y`, `rover_z`
+- `position_available`
+- `csi_real`, `csi_imag`
+- `csi_available`
+
+Reconstruct the complex RF quantity as:
+
+```python
+csi = ds["csi_real"] + 1j * ds["csi_imag"]
+phase = np.angle(csi)
+amplitude = np.abs(csi)
+```
+
+Interpretation notes:
+
+- `phase` here is a calibrated complex channel phase, not an angle-of-arrival.
+- `position_available` should be checked before trusting the rover coordinates for a cycle.
+- Missing RF rows usually mean a host did not produce a valid record for that cycle.
+
+### Step 5. Read the Acoustic Files
+
+For acoustic data, treat each CSV as one acoustic event.
+
+Work through it like this:
+
+1. Inspect the files in `acoustic/results/`.
+2. Use timestamps and the acoustic client logs to place them in run order.
+3. Read the rows by `microphone_label` and `microphone_coordinates`.
+4. Treat the final `chirp_excitation` row as the transmitted reference waveform.
+5. Apply your own deconvolution or RIR extraction flow if needed.
+
+Important limitation:
+
+- Acoustic files are not yet keyed directly by `experiment_id` and `cycle_id`, so they are less convenient to join than the RF files.
+
+### Step 6. Check the Data Visually
+
+For quick inspection, use:
+
+- `processing/plot_csi_positions.ipynb`
+
+This is the fastest way to verify:
+
+- the rover trajectory
+- the RF phase evolution
+- CSI-derived amplitude or power patterns
+
+Example animation:
+
+![Example RF phase and rover position animation](processing/phase_rover_EXP002.gif)
+
+This GIF shows one processed experiment as a cycle-by-cycle animation, with RF phase over the ceiling receiver aperture on the left and the rover position on the right.
+
+### Step 7. Use the Detailed Reference When Needed
+
+The sections above this tutorial explain the dataset structure in detail:
+
+- `What One Measurement Means` explains the cycle concept.
+- `Data Products and File Locations` explains which file is produced by which component.
+- `How to Interpret and Join the Data` explains RF timing, RF geometry, cable correction, and acoustic caveats.
+
+Use those sections when you need the exact semantics behind a field or file, but the workflow above should be enough to start analyzing the data.
+
+## View 2: Operator and Developer Reference
+
+If you need to deploy the system, run new measurements, debug the control plane, or extend the software, the remaining sections are the reference view.
+
+## Runtime Architecture
+
+There are two layers in the repository.
+
+### 1. Deployment Layer
+
+Responsible for:
+
+- selecting tiles
+- copying the repository and settings
+- installing dependencies
+- starting long-lived services on the tiles
+
+Main scripts:
+
+- `server/setup-clients.py`
+- `server/update-experiment.py`
+- `server/run-clients.py`
+
+### 2. Orchestration Layer
+
+Responsible for:
+
+- coordinating one complete cycle across rover, position logging, acoustic, and RF
+
+Main scripts:
+
+- `server/zmq_orchestrator.py`
+- `client/rover/ZMQclient_rover.py`
+- `acoustic/ZMQclient_acoustic.py`
+- `server/record/RF-orchestrator.py`
+- `client/run-ref.py`
+
+Important distinction:
+
+- `server/run-clients.py` manages services on the tiles.
+- `server/zmq_orchestrator.py` is the outer measurement loop and must be run separately.
+
+## Configuration Files
+
+### `experiment-settings.yaml`
+
+This is the main deployment and runtime configuration file.
+
+It controls:
+
+- tile selection through `tiles`
+- orchestrator host discovery through `server.host`
+- RF synchronization via `rf_sync`
+- tile-side worker scripts through `client_scripts`
+- runtime storage through `experiment_config.storage_path`
+- position logging through `positioning`
+
+### `server/serverConfig.yaml`
+
+This controls the outer orchestrator loop:
+
+- `experiment_id`
+- `bind`
+- `cycles`
+- `meas_start`
+- `timeouts.poll_ms`
+
+### `client/rover/config.yaml`
+
+This controls the rover sweep plan:
+
+- sweep bounds
+- spacing schedule
+- cycle behavior
+- work area
+- serial settings
+
+## Deployment and Acquisition
+
+Clone the repository:
+
+```bash
+git clone https://github.com/techtile-by-dramco/ELLIIIT-dataset-26.git
+cd ELLIIIT-dataset-26
+```
+
+Prepare the server environment:
+
+```bash
+cd server
+./setup-server.sh
+source bin/activate
+cd ..
+```
+
+Prepare tiles:
+
+```bash
+python server/setup-clients.py --ansible-output
+python server/update-experiment.py --ansible-output
+```
+
+Start tile-side services:
+
+```bash
+python server/run-clients.py --start
+```
+
+Run the orchestrator:
+
+```bash
+python server/zmq_orchestrator.py server --config server/serverConfig.yaml --experiment-settings experiment-settings.yaml
+```
+
+If you want to run the long-lived clients manually instead of through tile services, the main commands are:
+
+```bash
+python acoustic/ZMQclient_acoustic.py --id acoustic
+python client/rover/ZMQclient_rover.py --config-file client/rover/config.yaml
+python server/record/RF-orchestrator.py --id rf --experiment-settings experiment-settings.yaml
+```
+
+The reference transmitter and RF tile workers are usually started through `client_scripts` in `experiment-settings.yaml` via `server/run-clients.py`. If you want to run `client/run-ref.py` manually, use the same RF arguments that are configured there, for example:
+
+```bash
+python client/run-ref.py \
+  --config-file experiment-settings.yaml \
+  --args "type=b200" \
+  --freq 920e6 \
+  --rate 250e3 \
+  --duration 1E6 \
+  --channels 0 \
+  --wave-ampl 0.8 \
+  --gain 73 \
+  --waveform sine \
+  --wave-freq 0
+```
+
+## RF Post-Processing
+
+The active RF post-processing path is:
+
+- `processing/extract_csi_from_smb_v2.py`
+
+It performs:
+
+1. Scan each hostname folder for RF result files.
+2. Parse JSON, JSON-lines, text, YAML, CSV, or legacy archive formats.
+3. Recover `experiment_id`, `cycle_id`, `hostname`, `pilot_phase`, and `pilot_amplitude`.
+4. Apply the cable correction from `client/ref-RF-cable.yml`.
+5. Join with rover positions from `server/record/data/exp-*-positions.csv`.
+6. Write one NetCDF dataset.
+
+The resulting dataset contains:
+
+- coordinates:
+  - `experiment_id`
+  - `cycle_id`
+  - `hostname`
+- rover variables:
+  - `rover_x`
+  - `rover_y`
+  - `rover_z`
+  - `position_available`
+- RF variables:
+  - `csi_real`
+  - `csi_imag`
+  - `csi_available`
 
 Useful commands:
 
 ```bash
 python processing/extract_csi_from_smb_v2.py
 python processing/extract_csi_from_smb_v2.py --max-measurements 10
-python processing/extract_csi_from_smb_v2.py --data-root /path/to/data/root
+python processing/extract_csi_from_smb_v2.py --output processing/csi_custom.nc
 ```
 
-To summarize runtime failures recorded by the RF workers, use [`processing/summarize_error_logs_from_smb.py`](/mnt/c/Users/Calle/OneDrive/Documenten/GitHub/ELLIIIT-dataset-26/processing/summarize_error_logs_from_smb.py). It scans each host folder for `error.log`, reads the JSON-line entries, and prints grouped counts by error type, hostname, experiment, and capture type.
-
-Useful commands:
+To summarize RF runtime failures:
 
 ```bash
 python processing/summarize_error_logs_from_smb.py
@@ -342,31 +810,38 @@ python processing/summarize_error_logs_from_smb.py --host wallEast --tail 20
 python processing/summarize_error_logs_from_smb.py --error-type CLOCK_LOCK_FAILED --json-output processing/error_summary.json
 ```
 
-For quick inspection and plotting, use [`processing/plot_csi_positions.ipynb`](/mnt/c/Users/Calle/OneDrive/Documenten/GitHub/ELLIIIT-dataset-26/processing/plot_csi_positions.ipynb). The notebook reads the NetCDF dataset, plots CSI phase as `np.angle(csi_real + 1j * csi_imag)` in degrees versus cycle ID, and plots the 2D rover trajectory.
-
 ## Operational Utilities
+
+### Rover Sweep Preview
+
+To preview the configured sweep before running the rover:
+
+```bash
+python client/rover/ZMQclient_rover.py --preview-sweeps --config-file client/rover/config.yaml
+```
+
+This writes a PNG preview next to the rover config by default.
 
 ### Socket Cleanup
 
-If a local ZMQ process is suspended or left behind, use [`server/close-sockets.sh`](/mnt/c/Users/Calle/OneDrive/Documenten/GitHub/ELLIIIT-dataset-26/server/close-sockets.sh). The script checks the repository's server-side ZMQ bind points and known runtime entrypoints, resumes suspended jobs with `CONT`, then sends `TERM` and `KILL` if needed.
-
-Typical usage:
+If ZMQ ports remain occupied after an interrupted run:
 
 ```bash
 server/close-sockets.sh --dry-run
 server/close-sockets.sh
 ```
 
-The script covers the main server-side ZMQ roles defined in:
+This is useful when ports such as `5555`, `5557`, `5558`, `5559`, `5678`, `5679`, or `50001` remain bound after a crash or a suspended process.
 
-- `server/zmq_orchestrator.py`
-- `server/record/RF-orchestrator.py`
-- `server/record/sync-server.py`
-- `server/run_server.py` and `server/utils/server_com.py`
-- `client/rover/ZMQserverTest_rover.py`
-- `client/run_reciprocity.py`
-- `client/usrp_pilot.py`
+## Summary
 
-Use it when a port such as `5555`, `5557`, `5558`, `5559`, `5678`, `5679`, or `50001` remains occupied after an interrupted run.
+For data users, the core mental model is:
 
-</details>
+- one orchestrator cycle equals one rover pose
+- that pose gets one position sample
+- then one acoustic measurement
+- then one RF measurement cycle
+
+For RF analysis, `experiment_id` and `cycle_id` are the main keys.
+
+For acoustic analysis, the data is recorded per cycle but currently needs timestamp and log-based matching because the saved CSVs do not yet embed those identifiers directly.
