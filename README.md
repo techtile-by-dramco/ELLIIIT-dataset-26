@@ -298,7 +298,7 @@ Both scripts also append JSON-line runtime diagnostics to `error.log`. Each erro
 
 Position logs are written by the orchestrator to `server/record/data/exp-<experiment_id>-positions.csv`.
 
-The current CSI extraction helper is [`processing/extract_csi_from_smb.py`](/mnt/c/Users/Calle/OneDrive/Documenten/GitHub/ELLIIIT-dataset-26/processing/extract_csi_from_smb.py). It builds one xarray/NetCDF file by:
+The legacy CSI extraction helper is [`processing/extract_csi_from_smb.py`](/mnt/c/Users/Calle/OneDrive/Documenten/GitHub/ELLIIIT-dataset-26/processing/extract_csi_from_smb.py). It builds one xarray/NetCDF file by:
 
 - scanning each hostname folder for measurement archives named `data_<HOSTNAME>_<experiment_id>_<cycle_id>*.npz`
 - extracting `pilot_phase` and `pilot_amplitude` directly when present, or deriving them from legacy `pilot_iq` stored inside the archive
@@ -315,6 +315,32 @@ python processing/extract_csi_from_smb.py --data-root /path/to/data/root
 ```
 
 On Windows, `processing/extract_csi_from_smb.py` defaults `--data-root` to the UNC network path `\\10.128.48.9\elliit`.
+
+For the active JSON-based RF output format, use [`processing/extract_csi_from_smb_v2.py`](/mnt/c/Users/Calle/OneDrive/Documenten/GitHub/ELLIIIT-dataset-26/processing/extract_csi_from_smb_v2.py). It:
+
+- scans each hostname folder for result files named `data_<HOSTNAME>_*.json`, `*.jsonl`, `*.txt`, or `*.log`
+- reads the JSON records written by the active RF workers
+- applies the same cable correction and position join as the legacy extractor
+- ignores position-only experiments or cycles that have no extracted CSI rows
+- writes the NetCDF dataset to `processing/csi_<experiment_id>.nc` by default (or joins multiple experiment IDs when one dataset spans more than one)
+
+Useful commands:
+
+```bash
+python processing/extract_csi_from_smb_v2.py
+python processing/extract_csi_from_smb_v2.py --max-measurements 10
+python processing/extract_csi_from_smb_v2.py --data-root /path/to/data/root
+```
+
+To summarize runtime failures recorded by the RF workers, use [`processing/summarize_error_logs_from_smb.py`](/mnt/c/Users/Calle/OneDrive/Documenten/GitHub/ELLIIIT-dataset-26/processing/summarize_error_logs_from_smb.py). It scans each host folder for `error.log`, reads the JSON-line entries, and prints grouped counts by error type, hostname, experiment, and capture type.
+
+Useful commands:
+
+```bash
+python processing/summarize_error_logs_from_smb.py
+python processing/summarize_error_logs_from_smb.py --host wallEast --tail 20
+python processing/summarize_error_logs_from_smb.py --error-type CLOCK_LOCK_FAILED --json-output processing/error_summary.json
+```
 
 For quick inspection and plotting, use [`processing/plot_csi_positions.ipynb`](/mnt/c/Users/Calle/OneDrive/Documenten/GitHub/ELLIIIT-dataset-26/processing/plot_csi_positions.ipynb). The notebook reads the NetCDF dataset, plots CSI phase as `np.angle(csi_real + 1j * csi_imag)` in degrees versus cycle ID, and plots the 2D rover trajectory.
 
