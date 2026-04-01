@@ -565,9 +565,35 @@ def tune_usrp(usrp, freq, channels, at_time):
     logger.info("TX LO is locked")
 
 
+def get_configured_pilot_tx_gain():
+    configured_tx_gain = globals().get("PILOT_TX_GAIN")
+    if configured_tx_gain is None:
+        raise RuntimeError("PILOT_TX_GAIN is not configured")
+    return configured_tx_gain
+
+
+def log_pilot_tx_gain(usrp, channels, context):
+    configured_tx_gain = get_configured_pilot_tx_gain()
+    logger.info(
+        "%s: configured pilot TX gain=%s, channels=%s",
+        context,
+        configured_tx_gain,
+        channels,
+    )
+    for chan in channels:
+        logger.info(
+            "%s: TX channel %d configured with pilot TX gain=%s (device reports %s)",
+            context,
+            chan,
+            configured_tx_gain,
+            usrp.get_tx_gain(chan),
+        )
+
+
 def setup(usrp, server_ip, connect=True):
 
     rate = RATE
+    configured_tx_gain = get_configured_pilot_tx_gain()
 
     mcr = 20e6
 
@@ -584,9 +610,12 @@ def setup(usrp, server_ip, connect=True):
     # smallest as possible (https://files.ettus.com/manual/page_usrp_b200.html#b200_fe_bw)
     rx_bw = 200e3
 
+    logger.info("Setup config: tx_rate=%s, channels=%s", rate, channels)
+
     for chan in channels:
         usrp.set_tx_rate(rate, chan)
-        usrp.set_tx_gain(PILOT_TX_GAIN, chan)
+        usrp.set_tx_gain(configured_tx_gain, chan)
+    log_pilot_tx_gain(usrp, channels, context="Setup config")
 
     # streaming arguments
 
@@ -983,7 +1012,12 @@ def tx_pilot(usrp, tx_streamer, quit_event, at_time):
     logger.debug(starting_in(usrp, at_time))
 
     logger.debug(
-        f"TX CH0:{np.rad2deg(phases[0]):.2f} and CH1:{np.rad2deg(phases[1]):.2f}"
+        f"TX phase CH0:{np.rad2deg(phases[0]):.2f} and CH1:{np.rad2deg(phases[1]):.2f}"
+    )
+    log_pilot_tx_gain(
+        usrp,
+        channels=list(range(tx_streamer.get_num_channels())),
+        context="Before tx_pilot transmission",
     )
 
     tx_thr = tx_thread(
