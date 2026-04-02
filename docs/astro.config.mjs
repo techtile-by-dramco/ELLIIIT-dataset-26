@@ -4,6 +4,7 @@ import starlight from "@astrojs/starlight";
 
 const site = process.env.SITE_URL ?? "http://localhost:4321";
 const base = process.env.BASE_PATH ?? "/";
+const basePrefix = base.endsWith("/") ? base : `${base}/`;
 
 export default defineConfig({
   site,
@@ -11,7 +12,7 @@ export default defineConfig({
   integrations: [
     starlight({
       title: "ELLIIIT Dataset Docs",
-      favicon: "/elliiit-favicon.svg",
+      favicon: `${basePrefix}elliiit-favicon.svg`,
       logo: {
         light: "./src/assets/elliiit-logo-light.svg",
         dark: "./src/assets/elliiit-logo-dark.svg",

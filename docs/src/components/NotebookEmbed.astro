@@ -6,16 +6,27 @@ interface Props {
 }
 
 const { title, htmlPath, notebookPath } = Astro.props;
+
+function withBase(path: string): string {
+  const base = import.meta.env.BASE_URL.endsWith("/")
+    ? import.meta.env.BASE_URL
+    : `${import.meta.env.BASE_URL}/`;
+  const normalizedPath = String(path).replace(/^\/+/, "");
+  return `${base}${normalizedPath}`;
+}
+
+const htmlHref = withBase(htmlPath);
+const notebookHref = withBase(notebookPath);
 ---
 
 <div class="notebook-actions">
-  <a href={htmlPath} target="_blank" rel="noreferrer">Open full notebook view</a>
-  <a href={notebookPath} download>Download notebook</a>
+  <a href={htmlHref} target="_blank" rel="noreferrer">Open full notebook view</a>
+  <a href={notebookHref} download>Download notebook</a>
 </div>
 
 <iframe
   title={title}
-  src={htmlPath}
+  src={htmlHref}
   loading="lazy"
   class="notebook-frame"
 ></iframe>
