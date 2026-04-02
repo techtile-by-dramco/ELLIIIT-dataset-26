@@ -1,0 +1,18 @@
+---
+title: "Notebook: Rover Positions"
+description: Embedded notebook for inspecting the valid rover positions and the active antenna geometry.
+status: stable
+component: dataset
+---
+
+import NotebookEmbed from "../../../components/NotebookEmbed.astro";
+
+This notebook focuses on the rover positions stored in the RF xarray. It merges one or more experiment IDs, plots the full rover point cloud, overlays the active `CH1` antenna tiles at real `14 cm x 14 cm` scale, and maps a physical point back to the nearest recorded `(experiment_id, cycle_id)`.
+
+The content below is rendered directly from the source notebook in `processing/tutorial_rover_positions.ipynb`.
+
+<NotebookEmbed
+  title="Rover Positions Notebook"
+  htmlPath="/notebooks/tutorial_rover_positions.html"
+  notebookPath="/notebooks/tutorial_rover_positions.ipynb"
+/>

@@ -1,0 +1,37 @@
+---
+title: Getting Started
+description: Start from the raw repository outputs and learn how one measurement cycle maps to the processed dataset.
+status: stable
+component: dataset
+---
+
+The repository collects paired measurements from two sensing modalities:
+
+- acoustic measurements from a distributed microphone array
+- RF measurements from distributed USRP-based receivers and transmitters inside Techtile
+
+At each rover stop, the system records:
+
+1. a rover move command and completion event
+2. one Qualisys position sample
+3. one acoustic capture
+4. one RF measurement cycle
+
+That means the acoustic and RF observations correspond to the same physical rig pose, even though they are acquired sequentially rather than simultaneously.
+
+The most important identifiers are:
+
+- `experiment_id`: the logical run identifier
+- `cycle_id`: the orchestrator loop index
+- `meas_id`: the sequential measurement index used by the protocol
+
+The fastest way to start working with the processed data is:
+
+1. build the RF xarray with the extractor
+2. open the tutorial notebooks
+3. use the xarray masks to identify valid rover positions and available CSI
+
+Continue with:
+
+- [Build the RF Xarray](/tutorials/build-rf-xarray/)
+- [Notebook: RF Dataset Overview](/tutorials/notebook-overview/)

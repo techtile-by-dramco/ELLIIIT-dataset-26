@@ -1,0 +1,21 @@
+---
+title: Configuration
+description: Key configuration files that shape the rover sweep, RF orchestration, and dataset interpretation.
+status: stable
+component: operations
+---
+
+The most important configuration files are:
+
+- `experiment-settings.yaml`
+  - defines active clients and experiment-level settings
+  - includes RF synchronization parameters and the positioning block
+- `server/serverConfig.yaml`
+  - controls server-side orchestration identifiers and runtime behavior
+- `client/rover/config.yaml`
+  - defines the rover sweep and `grid.min_spacing`
+  - that spacing is also used by the extractor to filter duplicate consecutive positions
+- `client/ref-RF-cable.yml`
+  - contains the cable correction used by the RF extractor
+
+When the processed xarray is built, the extractor records important configuration-derived metadata in `ds.attrs`, including the duplicate-position tolerance and the last processed measurement timestamp summary.

@@ -1,0 +1,37 @@
+---
+title: Measurement Sequence
+description: Orchestrator cycle semantics and the internal RF synchronization sequence.
+status: stable
+component: orchestration
+---
+
+The outer measurement sequence is implemented in `server/zmq_orchestrator.py`.
+
+Per cycle:
+
+```text
+orchestrator
+  -> MOVE to rover
+  <- MOVE_DONE
+  -> capture one Qualisys position sample
+  -> START_MEAS to acoustic client
+  <- MEAS_DONE
+  -> START_MEAS to RF orchestrator
+  <- MEAS_DONE
+```
+
+Important interpretation details:
+
+- the position sample is taken after the rover has reached the commanded waypoint
+- the acoustic and RF measurements are then performed while the rig remains at that location
+- the RF cycle contains its own internal synchronization with the tile workers
+
+Per `START_MEAS` to `server/record/RF-orchestrator.py`:
+
+1. wait for `rf_sync.num_subscribers` ALIVE messages
+2. wait `rf_sync.pre_sync_delay_s`
+3. publish one `SYNC` message with payload `<cycle_id> <experiment_id>`
+4. wait for `rf_sync.num_subscribers` DONE messages
+5. append a measurement entry to `server/record/data/exp-<experiment_id>.yml`
+
+This is the core meaning of one orchestrator `cycle_id`: one rover pose followed by one acoustic and one RF acquisition pair.

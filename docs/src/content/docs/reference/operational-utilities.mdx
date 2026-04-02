@@ -1,0 +1,38 @@
+---
+title: Operational Utilities
+description: Small helper scripts and visual checks used when running or diagnosing experiments.
+status: stable
+component: operations
+---
+
+## Rover sweep preview
+
+To preview the configured sweep before running the rover:
+
+```bash
+python client/rover/ZMQclient_rover.py --preview-sweeps --config-file client/rover/config.yaml
+```
+
+This writes a PNG preview next to the rover config by default.
+
+![Rover sweep preview](/images/config_sweep_preview.png)
+
+## RF runtime failure summary
+
+To summarize RF runtime failures:
+
+```bash
+python processing/summarize_error_logs_from_smb.py
+python processing/summarize_error_logs_from_smb.py --host wallEast --tail 20
+python processing/summarize_error_logs_from_smb.py --error-type CLOCK_LOCK_FAILED --json-output results/error_summary.json
+```
+
+## Visual quick checks
+
+The notebook-backed tutorial pages are the fastest way to verify:
+
+- rover trajectories
+- phase evolution over the active aperture
+- amplitude or power patterns for selected cycles
+
+![Overview animation preview](/images/video.gif)

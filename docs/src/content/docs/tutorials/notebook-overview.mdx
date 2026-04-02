@@ -1,0 +1,18 @@
+---
+title: "Notebook: RF Dataset Overview"
+description: Embedded overview notebook for loading the processed RF xarray, printing the summary, and plotting heatmaps.
+status: stable
+component: dataset
+---
+
+import NotebookEmbed from "../../../components/NotebookEmbed.astro";
+
+This notebook is the short entry point for the RF analysis workflow. It opens the latest matching NetCDF dataset, prints the dataset summary, plots the rover trajectory, and plots the phase and amplitude heatmaps for the last `100` CSI cycle values.
+
+The content below is rendered directly from the source notebook in `processing/plot_csi_positions.ipynb`.
+
+<NotebookEmbed
+  title="RF Dataset Overview Notebook"
+  htmlPath="/notebooks/plot_csi_positions.html"
+  notebookPath="/notebooks/plot_csi_positions.ipynb"
+/>

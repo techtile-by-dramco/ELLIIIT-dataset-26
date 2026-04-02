@@ -1,0 +1,25 @@
+---
+title: Deployment and Acquisition
+description: High-level operator workflow for configuring clients, starting services, and running measurements.
+status: stable
+component: operations
+---
+
+If you are operating the system rather than only consuming the dataset, the typical flow is:
+
+1. configure the experiment in `experiment-settings.yaml`
+2. prepare clients with the deployment scripts in `server/`
+3. start the long-lived tile services
+4. run the server/orchestrator
+5. acquire rover, acoustic, and RF measurements
+6. post-process the RF logs into the `.nc` dataset
+
+Representative operator entry points:
+
+- `server/setup-clients.py`
+- `server/update-experiment.py`
+- `server/run-clients.py`
+- `server/run_server.py`
+- `server/zmq_orchestrator.py`
+
+The repository keeps the raw acquisition outputs, the synchronized RF summaries, the rover position logs, and the post-processed RF xarray in separate locations. Use the tutorial track of this docs site once the `.nc` file exists and you want to analyze the measured data.

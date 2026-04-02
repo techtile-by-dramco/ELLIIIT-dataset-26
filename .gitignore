@@ -45,6 +45,17 @@ htmlcov/
 .idea/
 *.code-workspace
 
+# Docs site
+docs/node_modules/
+docs/.astro/
+docs/public/notebooks/*.html
+docs/public/notebooks/*.ipynb
+!docs/public/notebooks/.gitkeep
+
+# Local generated processing results
+results/*
+!results/.gitkeep
+
 # Local environment files
 .env
 .env.*

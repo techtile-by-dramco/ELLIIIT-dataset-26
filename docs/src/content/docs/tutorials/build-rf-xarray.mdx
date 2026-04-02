@@ -1,0 +1,71 @@
+---
+title: Build the RF Xarray
+description: Run the extractor, understand the filtering steps, and interpret the resulting NetCDF dataset.
+status: stable
+component: rf
+---
+
+The active RF post-processing path is:
+
+```bash
+python processing/extract_csi_from_smb_v2.py
+```
+
+Useful variants:
+
+```bash
+python processing/extract_csi_from_smb_v2.py --max-measurements 10
+python processing/extract_csi_from_smb_v2.py --data-root /path/to/storage/root
+python processing/extract_csi_from_smb_v2.py --positions-root server/record/data
+```
+
+The extractor:
+
+1. reads the per-host RF result files
+2. recovers `experiment_id`, `cycle_id`, `hostname`, `pilot_phase`, and `pilot_amplitude`
+3. applies the cable correction from `client/ref-RF-cable.yml`
+4. joins the RF rows with `exp-<experiment_id>-positions.csv`
+5. filters invalid, missing, and duplicate rover positions
+6. writes `results/csi_<experiment_id>.nc`
+
+Filtering applied along the way:
+
+- stale Qualisys samples are suppressed at logging time by `server/zmq_orchestrator.py`
+- invalid and missing position rows are tracked in the extractor summary
+- consecutive duplicate rover positions are removed using `grid.min_spacing / 5` per axis from `client/rover/config.yaml`
+
+The processed NetCDF stores:
+
+- coordinates:
+  - `experiment_id`
+  - `cycle_id`
+  - `hostname`
+- rover variables with shape `(experiment_id, cycle_id)`:
+  - `rover_x`
+  - `rover_y`
+  - `rover_z`
+  - `position_available`
+- RF variables with shape `(experiment_id, cycle_id, hostname)`:
+  - `csi_real`
+  - `csi_imag`
+  - `csi_available`
+
+Reconstruct the complex RF quantity as:
+
+```python
+csi = ds["csi_real"] + 1j * ds["csi_imag"]
+phase = np.angle(csi)
+amplitude = np.abs(csi)
+```
+
+Important interpretation details:
+
+- `cycle_id` is a shared sparse axis across experiments
+- `csi_available` is the authoritative mask for whether a host/cycle entry exists
+- rover coordinates can still be `NaN`, so always check `position_available` and finite coordinates before using a pose
+- some original rover stops may be absent because duplicate consecutive positions are filtered before the dataset is written
+
+Once you have a `.nc` file, continue with:
+
+- [Notebook: RF Dataset Overview](/tutorials/notebook-overview/)
+- [Notebook: Rover Positions](/tutorials/notebook-rover-positions/)

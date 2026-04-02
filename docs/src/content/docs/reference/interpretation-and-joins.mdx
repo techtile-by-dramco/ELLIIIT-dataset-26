@@ -1,0 +1,52 @@
+---
+title: Interpretation and Joins
+description: How to join RF rows back to rover poses and interpret the processed xarray safely.
+status: stable
+component: rf
+---
+
+Before joining anything, keep this mental model in mind:
+
+1. one orchestrator cycle means one rover pose
+2. that pose gets one Qualisys position sample
+3. that same pose then gets one acoustic capture
+4. that same pose then gets one RF measurement cycle
+
+In practice:
+
+- one row in `exp-<experiment_id>-positions.csv` is one rover stop
+- one RF JSON-line record with the same `experiment_id` and `cycle_id` belongs to that stop
+- in a fully populated reciprocity cycle, that means up to `42` ceiling receiver rows with the same `(experiment_id, cycle_id)`
+
+In the processed NetCDF:
+
+- `rover_x`, `rover_y`, `rover_z` contain the joined Qualisys coordinates
+- `position_available == 1` means the position row was considered usable
+- `csi_real + 1j * csi_imag` reconstructs the cable-corrected complex RF quantity
+- `csi_available == 1` means a given host contributed a usable RF record for that experiment/cycle
+
+Important structural details:
+
+- `cycle_id` is a shared axis across the dataset, not a guarantee that every experiment has data for every listed cycle
+- always use `csi_available` to discover which cycles and hostnames are populated
+- always check `position_available` and finite rover coordinates before trusting a rover pose
+- duplicate rover positions may already have been filtered out before the `.nc` file was written
+
+Safe starting pattern:
+
+```python
+exp = ds.sel(experiment_id="EXP003")
+cycle_mask = exp["csi_available"].any(dim="hostname")
+cycle_ids = exp["cycle_id"].values[cycle_mask.values]
+
+csi = (exp["csi_real"] + 1j * exp["csi_imag"]).sel(cycle_id=cycle_ids)
+position_ok = (
+    exp["position_available"].sel(cycle_id=cycle_ids) > 0
+) & (
+    np.isfinite(exp["rover_x"].sel(cycle_id=cycle_ids))
+) & (
+    np.isfinite(exp["rover_y"].sel(cycle_id=cycle_ids))
+) & (
+    np.isfinite(exp["rover_z"].sel(cycle_id=cycle_ids))
+)
+```

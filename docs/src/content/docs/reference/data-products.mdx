@@ -1,0 +1,39 @@
+---
+title: Data Products
+description: Files written by the rover logger, RF runtime, acoustic pipeline, and RF post-processing steps.
+status: stable
+component: dataset
+---
+
+The repository writes several different outputs. The most important ones are:
+
+## Rover position log
+
+- location: `server/record/data/exp-<experiment_id>-positions.csv`
+- written by: `server/zmq_orchestrator.py`
+- one row per completed rover move
+- main columns: `experiment_id`, `cycle_id`, `meas_id`, `position_status`, `captured_at_utc`, `position_t`, `x`, `y`, `z`, `error`
+
+## RF measurement log
+
+- location: per-host runtime output directories
+- file pattern: `data_<HOSTNAME>_<experiment_id>.txt`
+- written by: `client/run_reciprocity.py` and `client/run_uncalibrated.py`
+- one JSON-line record per RF measurement on one host
+- typical fields: `timestamp_utc`, `hostname`, `experiment_id`, `cycle_id`, `pilot_phase`, `pilot_amplitude`, `captured_samples`
+
+## RF runtime error log
+
+- location: per-host runtime output directory as `error.log`
+- JSON-line diagnostics for failed or suspect RF captures
+
+## RF orchestrator summary log
+
+- location: `server/record/data/exp-<experiment_id>.yml`
+- one summary entry per synchronized RF cycle
+
+## Processed RF xarray
+
+- location: `results/csi_<experiment_id>.nc`
+- written by: `processing/extract_csi_from_smb_v2.py`
+- combines rover positions and CSI into one xarray/NetCDF dataset

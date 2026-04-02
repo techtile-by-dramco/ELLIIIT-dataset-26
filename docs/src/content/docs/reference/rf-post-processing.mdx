@@ -1,0 +1,47 @@
+---
+title: RF Post-Processing
+description: Active extractor path, resulting dataset schema, and the published notebook workflow.
+status: stable
+component: rf
+---
+
+The active RF post-processing path is:
+
+- `processing/extract_csi_from_smb_v2.py`
+
+It performs:
+
+1. scan each hostname folder for RF result files
+2. parse JSON, JSON-lines, text, YAML, CSV, or legacy archive formats
+3. recover `experiment_id`, `cycle_id`, `hostname`, `pilot_phase`, and `pilot_amplitude`
+4. apply the cable correction from `client/ref-RF-cable.yml`
+5. join with rover positions from `server/record/data/exp-*-positions.csv`
+6. drop consecutive duplicate-position cycles using `grid.min_spacing / 5` per axis
+7. write one NetCDF dataset
+
+Useful commands:
+
+```bash
+python processing/extract_csi_from_smb_v2.py
+python processing/extract_csi_from_smb_v2.py --max-measurements 10
+python processing/extract_csi_from_smb_v2.py --output results/csi_custom.nc
+```
+
+The resulting dataset contains:
+
+- coordinates: `experiment_id`, `cycle_id`, `hostname`
+- rover variables: `rover_x`, `rover_y`, `rover_z`, `position_available`
+- RF variables: `csi_real`, `csi_imag`, `csi_available`
+- dataset attributes with coverage counts, duplicate-position filter metadata, and last-measurement metadata
+
+The recommended analysis workflow is now published as notebook-backed docs pages:
+
+- [Notebook: RF Dataset Overview](/tutorials/notebook-overview/)
+- [Notebook: Rover Positions](/tutorials/notebook-rover-positions/)
+- [Notebook: CSI Per Position](/tutorials/notebook-csi-per-position/)
+
+Example videos from an earlier processed run:
+
+<video controls src="/media/phase_rover_EXP003.mp4" style="width: 100%; border-radius: 1rem; margin-bottom: 1rem;"></video>
+
+<video controls src="/media/power_rover_EXP003.mp4" style="width: 100%; border-radius: 1rem;"></video>

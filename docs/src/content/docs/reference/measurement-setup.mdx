@@ -1,0 +1,30 @@
+---
+title: Measurement Setup
+description: Physical measurement rig, active RF aperture, and visual overview of the Techtile deployment.
+status: stable
+component: dataset
+---
+
+The measurement rig combines:
+
+- an ultrasonic speaker for the acoustic channel
+- an RF UE antenna for the RF channel
+- a common mechanical mount so both modalities share the same sampled location
+
+Ground-truth position is provided by the Qualisys system configured in the `positioning` block of `experiment-settings.yaml`.
+
+For the reciprocity dataset path in this repository, the active RF aperture is the ceiling group:
+
+- `42` ceiling receiver tiles: `A05` through `G10`
+- `1` synchronized pilot transmitter
+- `1` separate continuous reference transmitter started by `client/run-ref.py`
+
+The repository stores one RF summary row per receiver host and per cycle. The processed dataset therefore represents one host per active ceiling tile, not a separate stored row for each physical RF connector.
+
+Visual references:
+
+![Measurement setup photo 1](/images/photo1.jpg)
+
+![Measurement setup photo 2](/images/photo2.jpg)
+
+![Rover mount detail](/images/holder.jpg)
