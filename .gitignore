@@ -61,7 +61,6 @@ docs/public/notebooks/*.ipynb
 !docs/public/notebooks/.gitkeep
 
 # Local generated processing results
-results/*
 !results/.gitkeep
 
 # Local environment files
