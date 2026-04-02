@@ -1,6 +1,6 @@
 ---
 title: Getting Started
-description: Start from the raw repository outputs and learn how one measurement cycle maps to the processed dataset.
+description: Start from an existing `.nc` file and learn how one measurement cycle maps to the processed dataset.
 status: stable
 component: dataset
 ---
@@ -27,14 +27,17 @@ The most important identifiers are:
 - `cycle_id`: the orchestrator loop index
 - `meas_id`: the sequential measurement index used by the protocol
 
-The fastest way to start working with the processed data is:
+For most readers of this docs site, the starting point is simple:
 
-1. build the RF xarray with the extractor
+1. obtain the processed RF `.nc` file
 2. open the tutorial notebooks
 3. use the xarray masks to identify valid rover positions and available CSI
 
+You do **not** need access to the NAS, the raw RF logs, or the extractor pipeline to follow the tutorial track.
+
 Continue with:
 
-- [Build the RF Xarray](build-rf-xarray/)
+- [Use the RF Xarray](build-rf-xarray/)
 - [Notebook: RF Xarray Structure](notebook-xarray-structure/)
 - [Notebook: RF Dataset Overview](notebook-overview/)
+- [Notebook: CSI Movies](notebook-csi-movies/)

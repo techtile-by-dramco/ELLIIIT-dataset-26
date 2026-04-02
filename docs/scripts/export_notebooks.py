@@ -12,6 +12,7 @@ NOTEBOOKS = [
     "tutorial_xarray_structure.ipynb",
     "tutorial_rover_positions.ipynb",
     "tutorial_csi_per_position.ipynb",
+    "tutorial_csi_movies.ipynb",
 ]
 
 

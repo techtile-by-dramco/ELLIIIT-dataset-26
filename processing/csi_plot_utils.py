@@ -8,6 +8,8 @@ import re
 from typing import Iterable, Sequence
 
 import matplotlib.pyplot as plt
+from matplotlib.animation import FFMpegWriter
+from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
 from matplotlib.patches import Rectangle
 import numpy as np
@@ -23,6 +25,9 @@ POSITIONS_URL = (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RESULTS_DIR = REPO_ROOT / "results"
 DEFAULT_HEATMAP_MAX_CYCLE_VALUES = 100
+DEFAULT_MOVIE_MAX_FRAMES = 250
+DEFAULT_MOVIE_FPS = 10
+DEFAULT_MOVIE_DPI = 120
 POWER_DB_FLOOR = -120.0
 ANTENNA_TILE_SIZE_M = 0.14
 DATASET_TIMESTAMP_PATTERN = re.compile(r".*_(?P<timestamp>\d{8}_\d{6})(?:_\d{2})?\.nc$")
@@ -598,6 +603,47 @@ def positions_for_experiments(
         coords={"measurement_index": np.arange(measurement_count, dtype=int)},
         attrs={"experiment_ids": experiment_ids},
     )
+
+
+def movie_frame_table(
+    ds: xr.Dataset,
+    experiment_id: str | Sequence[str] | None = None,
+    max_frames: int | None = DEFAULT_MOVIE_MAX_FRAMES,
+) -> xr.Dataset:
+    positions = positions_for_experiments(ds, experiment_id)
+    total_valid_positions = int(positions.sizes.get("measurement_index", 0))
+    if total_valid_positions == 0:
+        if experiment_id is None:
+            raise ValueError("No valid rover positions available in the dataset.")
+        raise ValueError(f"No valid rover positions for {experiment_phrase(experiment_id)}.")
+
+    if max_frames is not None:
+        max_frames = int(max_frames)
+        if max_frames <= 0:
+            raise ValueError("max_frames must be positive or None.")
+
+    if max_frames is None or total_valid_positions <= max_frames:
+        source_indices = np.arange(total_valid_positions, dtype=int)
+    else:
+        source_indices = np.unique(
+            np.linspace(0, total_valid_positions - 1, num=max_frames, dtype=int)
+        )
+
+    frame_table = positions.isel(measurement_index=source_indices).copy()
+    frame_table = frame_table.assign_coords(
+        measurement_index=np.arange(frame_table.sizes["measurement_index"], dtype=int)
+    )
+    frame_table["source_measurement_index"] = ("measurement_index", source_indices.astype(int))
+    frame_table.attrs.update(
+        {
+            "experiment_ids": positions.attrs.get("experiment_ids", []),
+            "total_valid_positions": total_valid_positions,
+            "frame_count": int(frame_table.sizes.get("measurement_index", 0)),
+            "requested_max_frames": max_frames,
+            "sampled": bool(source_indices.size != total_valid_positions),
+        }
+    )
+    return frame_table
 
 
 def rover_track_for_experiment(ds: xr.Dataset, experiment_id: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -1320,3 +1366,328 @@ def plot_trajectory(
     ax.legend(title="Experiment")
     fig.tight_layout()
     return fig, ax
+
+
+def _movie_sequence_label(experiment_ids: Sequence[str]) -> str:
+    if len(experiment_ids) == 1:
+        return f"experiment {experiment_ids[0]}"
+    return f"{len(experiment_ids)} merged experiments"
+
+
+def _prepare_snapshot_movie_data(
+    ds: xr.Dataset,
+    experiment_id: str | Sequence[str] | None,
+    antenna_positions: dict[str, np.ndarray] | None,
+    max_frames: int | None,
+) -> dict[str, object]:
+    frame_table = movie_frame_table(ds, experiment_id=experiment_id, max_frames=max_frames)
+    selected_experiment_ids = frame_table.attrs.get("experiment_ids", [])
+    all_positions = positions_for_experiments(ds, experiment_id)
+    active_tiles = active_hostnames(ds, experiment_id)
+    antenna_table = antenna_position_table(
+        antenna_positions=antenna_positions,
+        hostnames=active_tiles,
+    )
+
+    frames: list[dict[str, object]] = []
+    power_values: list[np.ndarray] = []
+    for frame_index in range(frame_table.sizes["measurement_index"]):
+        selected_experiment_id = str(frame_table["experiment_id"].values[frame_index])
+        selected_cycle_id = int(frame_table["cycle_id"].values[frame_index])
+        snapshot = extract_csi_snapshot(
+            ds,
+            selected_experiment_id,
+            selected_cycle_id,
+            antenna_positions=antenna_positions,
+        )
+        x, y, valid = _snapshot_points(snapshot)
+        power_db = snapshot["csi_power_db"].values.astype(float)[valid]
+        phase_deg = snapshot["csi_phase_deg"].values.astype(float)[valid]
+        frames.append(
+            {
+                "experiment_id": selected_experiment_id,
+                "cycle_id": selected_cycle_id,
+                "rover_x": snapshot.attrs.get("rover_x"),
+                "rover_y": snapshot.attrs.get("rover_y"),
+                "antenna_x": x,
+                "antenna_y": y,
+                "phase_deg": phase_deg,
+                "power_db": power_db,
+                "csi_host_count": int(snapshot.attrs.get("csi_host_count", x.size)),
+            }
+        )
+        if power_db.size > 0:
+            power_values.append(power_db)
+
+    if power_values:
+        power_norm = power_norm_from_values(np.concatenate(power_values), floor_db=POWER_DB_FLOOR)
+    else:
+        power_norm = power_norm_from_values(np.asarray([POWER_DB_FLOOR], dtype=float), floor_db=POWER_DB_FLOOR)
+
+    return {
+        "frame_table": frame_table,
+        "frames": frames,
+        "selected_experiment_ids": selected_experiment_ids,
+        "sequence_label": _movie_sequence_label(selected_experiment_ids),
+        "all_rover_x": all_positions["rover_x"].values.astype(float),
+        "all_rover_y": all_positions["rover_y"].values.astype(float),
+        "frame_rover_x": frame_table["rover_x"].values.astype(float),
+        "frame_rover_y": frame_table["rover_y"].values.astype(float),
+        "antenna_table": antenna_table,
+        "power_norm": power_norm,
+    }
+
+
+def _snapshot_movie_status_text(
+    movie_data: dict[str, object],
+    frame: dict[str, object],
+    frame_number: int,
+) -> str:
+    frame_table = movie_data["frame_table"]
+    lines = [
+        f"{frame['experiment_id']} cycle {frame['cycle_id']}",
+        f"frame {frame_number}/{frame_table.attrs['frame_count']}",
+        f"hosts with CSI: {frame['csi_host_count']}",
+    ]
+    if frame_table.attrs.get("sampled", False):
+        lines.append(
+            "evenly sampled from "
+            f"{frame_table.attrs['total_valid_positions']} valid rover positions"
+        )
+    return "\n".join(lines)
+
+
+def _export_snapshot_movie(
+    ds: xr.Dataset,
+    experiment_id: str | Sequence[str] | None,
+    output_path: str | Path,
+    *,
+    value_key: str,
+    title_prefix: str,
+    colorbar_label: str,
+    cmap_name: str,
+    norm: Normalize,
+    movie_data: dict[str, object] | None = None,
+    antenna_positions: dict[str, np.ndarray] | None = None,
+    max_frames: int | None = DEFAULT_MOVIE_MAX_FRAMES,
+    fps: int = DEFAULT_MOVIE_FPS,
+    dpi: int = DEFAULT_MOVIE_DPI,
+    annotate_antennas: bool = False,
+    bitrate: int = 2400,
+) -> Path:
+    if movie_data is None:
+        movie_data = _prepare_snapshot_movie_data(
+            ds,
+            experiment_id=experiment_id,
+            antenna_positions=antenna_positions,
+            max_frames=max_frames,
+        )
+    output_path = Path(output_path).resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(8.5, 6.5))
+    all_rover_x = np.asarray(movie_data["all_rover_x"], dtype=float)
+    all_rover_y = np.asarray(movie_data["all_rover_y"], dtype=float)
+    if all_rover_x.size > 0:
+        ax.scatter(
+            all_rover_x,
+            all_rover_y,
+            s=10,
+            color="0.85",
+            alpha=0.7,
+            linewidth=0.0,
+            zorder=1,
+        )
+
+    antenna_table = movie_data["antenna_table"]
+    if antenna_table.sizes.get("hostname", 0) > 0:
+        overlay_antenna_positions(
+            ax,
+            antenna_positions=antenna_positions,
+            hostnames=antenna_table["hostname"].values.astype(str),
+            annotate=annotate_antennas,
+        )
+        half_tile = float(antenna_table.attrs.get("antenna_tile_size_m", ANTENNA_TILE_SIZE_M)) / 2.0
+        antenna_outline_x = np.concatenate(
+            [
+                antenna_table["antenna_x"].values.astype(float) - half_tile,
+                antenna_table["antenna_x"].values.astype(float) + half_tile,
+            ]
+        )
+        antenna_outline_y = np.concatenate(
+            [
+                antenna_table["antenna_y"].values.astype(float) - half_tile,
+                antenna_table["antenna_y"].values.astype(float) + half_tile,
+            ]
+        )
+        _set_plane_axes(
+            ax,
+            antenna_table["antenna_x"].values.astype(float),
+            antenna_table["antenna_y"].values.astype(float),
+            rover_x=None,
+            rover_y=None,
+            extra_x=np.concatenate([all_rover_x, antenna_outline_x]),
+            extra_y=np.concatenate([all_rover_y, antenna_outline_y]),
+        )
+    else:
+        first_frame = movie_data["frames"][0]
+        _set_plane_axes(
+            ax,
+            np.asarray(first_frame["antenna_x"], dtype=float),
+            np.asarray(first_frame["antenna_y"], dtype=float),
+            rover_x=None,
+            rover_y=None,
+            extra_x=all_rover_x,
+            extra_y=all_rover_y,
+        )
+
+    history_artist = ax.scatter(
+        [],
+        [],
+        s=18,
+        color="darkorange",
+        alpha=0.9,
+        edgecolor="white",
+        linewidth=0.3,
+        zorder=2,
+    )
+    snapshot_artist = ax.scatter(
+        [],
+        [],
+        c=[],
+        cmap=cmap_name,
+        norm=norm,
+        s=260,
+        marker="s",
+        edgecolor="black",
+        linewidth=0.7,
+        zorder=3,
+    )
+    rover_artist = ax.scatter(
+        [],
+        [],
+        marker="*",
+        color="crimson",
+        edgecolor="black",
+        linewidth=0.8,
+        s=260,
+        zorder=4,
+    )
+    status_text = ax.text(
+        0.02,
+        0.03,
+        "",
+        transform=ax.transAxes,
+        ha="left",
+        va="bottom",
+        fontsize=9,
+        bbox=dict(facecolor="white", alpha=0.9, edgecolor="0.75", boxstyle="round,pad=0.35"),
+        zorder=5,
+    )
+    colorbar = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap_name), ax=ax, pad=0.02)
+    colorbar.set_label(colorbar_label)
+    fig.tight_layout()
+
+    writer = FFMpegWriter(
+        fps=int(fps),
+        bitrate=int(bitrate),
+        metadata={
+            "title": f"{title_prefix} for {movie_data['sequence_label']}",
+            "artist": "ELLIIIT dataset tutorial utilities",
+        },
+    )
+
+    with writer.saving(fig, str(output_path), dpi=int(dpi)):
+        for frame_number, frame in enumerate(movie_data["frames"], start=1):
+            antenna_x = np.asarray(frame["antenna_x"], dtype=float)
+            antenna_y = np.asarray(frame["antenna_y"], dtype=float)
+            values = np.asarray(frame[value_key], dtype=float)
+            snapshot_artist.set_offsets(np.column_stack([antenna_x, antenna_y]))
+            snapshot_artist.set_array(values)
+
+            history_offsets = np.column_stack(
+                [
+                    np.asarray(movie_data["frame_rover_x"], dtype=float)[:frame_number],
+                    np.asarray(movie_data["frame_rover_y"], dtype=float)[:frame_number],
+                ]
+            )
+            history_artist.set_offsets(history_offsets)
+
+            rover_x = frame["rover_x"]
+            rover_y = frame["rover_y"]
+            if rover_x is None or rover_y is None:
+                rover_artist.set_offsets(np.empty((0, 2), dtype=float))
+            else:
+                rover_artist.set_offsets(np.asarray([[float(rover_x), float(rover_y)]], dtype=float))
+
+            ax.set_title(
+                f"{title_prefix} for {movie_data['sequence_label']}"
+            )
+            status_text.set_text(_snapshot_movie_status_text(movie_data, frame, frame_number))
+            writer.grab_frame()
+
+    plt.close(fig)
+    return output_path
+
+
+def export_spatial_phase_movie(
+    ds: xr.Dataset,
+    experiment_id: str | Sequence[str] | None,
+    output_path: str | Path,
+    *,
+    antenna_positions: dict[str, np.ndarray] | None = None,
+    max_frames: int | None = DEFAULT_MOVIE_MAX_FRAMES,
+    fps: int = DEFAULT_MOVIE_FPS,
+    dpi: int = DEFAULT_MOVIE_DPI,
+    annotate_antennas: bool = False,
+) -> Path:
+    return _export_snapshot_movie(
+        ds,
+        experiment_id=experiment_id,
+        output_path=output_path,
+        value_key="phase_deg",
+        title_prefix="CSI phase [deg] on the antenna plane",
+        colorbar_label="Phase [deg]",
+        cmap_name="twilight",
+        norm=Normalize(vmin=-180, vmax=180),
+        antenna_positions=antenna_positions,
+        max_frames=max_frames,
+        fps=fps,
+        dpi=dpi,
+        annotate_antennas=annotate_antennas,
+    )
+
+
+def export_spatial_power_movie(
+    ds: xr.Dataset,
+    experiment_id: str | Sequence[str] | None,
+    output_path: str | Path,
+    *,
+    antenna_positions: dict[str, np.ndarray] | None = None,
+    max_frames: int | None = DEFAULT_MOVIE_MAX_FRAMES,
+    fps: int = DEFAULT_MOVIE_FPS,
+    dpi: int = DEFAULT_MOVIE_DPI,
+    annotate_antennas: bool = False,
+) -> Path:
+    movie_data = _prepare_snapshot_movie_data(
+        ds,
+        experiment_id=experiment_id,
+        antenna_positions=antenna_positions,
+        max_frames=max_frames,
+    )
+    return _export_snapshot_movie(
+        ds,
+        experiment_id=experiment_id,
+        output_path=output_path,
+        value_key="power_db",
+        title_prefix="CSI power [dB] on the antenna plane",
+        colorbar_label="Power [dB]",
+        cmap_name="viridis",
+        norm=movie_data["power_norm"],
+        movie_data=movie_data,
+        antenna_positions=antenna_positions,
+        max_frames=max_frames,
+        fps=fps,
+        dpi=dpi,
+        annotate_antennas=annotate_antennas,
+    )

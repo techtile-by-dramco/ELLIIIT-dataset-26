@@ -1,38 +1,42 @@
 ---
-title: Build the RF Xarray
-description: Run the extractor, understand the filtering steps, and interpret the resulting NetCDF dataset.
+title: Use the RF Xarray
+description: Start from an existing `.nc` file, understand what is inside it, and use it safely in xarray.
 status: stable
 component: rf
 ---
 
-The active RF post-processing path is:
+Most readers of this documentation should start here:
 
-```bash
-python processing/extract_csi_from_smb_v2.py
+- you already have a processed RF `.nc` file
+- you want to inspect rover positions and CSI
+- you do **not** need the NAS or the raw RF result files
+
+The tutorial track assumes that the difficult part is already done: the dataset has already been extracted and filtered into one NetCDF/xarray file such as:
+
+```text
+results/csi_<experiment_id>.nc
 ```
 
-Useful variants:
+## Open The `.nc` File
 
-```bash
-python processing/extract_csi_from_smb_v2.py --max-measurements 10
-python processing/extract_csi_from_smb_v2.py --data-root /path/to/storage/root
-python processing/extract_csi_from_smb_v2.py --positions-root server/record/data
+If you are using the helper module from the notebooks:
+
+```python
+from processing import csi_plot_utils as csi
+
+ds, dataset_path = csi.open_dataset(dataset_path="results/csi_EXP003.nc")
+print(dataset_path)
 ```
 
-The extractor:
+If you want the lowest-level xarray entry point:
 
-1. reads the per-host RF result files
-2. recovers `experiment_id`, `cycle_id`, `hostname`, `pilot_phase`, and `pilot_amplitude`
-3. applies the cable correction from `client/ref-RF-cable.yml`
-4. joins the RF rows with `exp-<experiment_id>-positions.csv`
-5. filters invalid, missing, and duplicate rover positions
-6. writes `results/csi_<experiment_id>.nc`
+```python
+import xarray as xr
 
-Filtering applied along the way:
+ds = xr.open_dataset("results/csi_EXP003.nc")
+```
 
-- stale Qualisys samples are suppressed at logging time by `server/zmq_orchestrator.py`
-- invalid and missing position rows are tracked in the extractor summary
-- consecutive duplicate rover positions are removed using `grid.min_spacing / 5` per axis from `client/rover/config.yaml`
+## What The File Contains
 
 The processed NetCDF stores:
 
@@ -50,7 +54,18 @@ The processed NetCDF stores:
   - `csi_imag`
   - `csi_available`
 
-Reconstruct the complex RF quantity as:
+The quickest sanity checks are:
+
+```python
+ds.sizes
+ds.coords
+ds.data_vars
+ds.attrs
+```
+
+## Reconstruct The Complex RF Quantity
+
+The stored CSI components are split into real and imaginary parts:
 
 ```python
 csi = ds["csi_real"] + 1j * ds["csi_imag"]
@@ -58,15 +73,54 @@ phase = np.angle(csi)
 amplitude = np.abs(csi)
 ```
 
-Important interpretation details:
+## How To Think About The Structure
+
+- `experiment_id` selects one logical run
+- `cycle_id` selects one physical rover stop inside that run
+- `hostname` selects one RF receiver host or tile
+
+That means:
+
+- one `(experiment_id, cycle_id)` pair gives you one rover pose
+- the same pair also gives you one CSI vector across the active hostnames
+- selecting one `experiment_id` leaves a `cycle_id x hostname` RF slice
+
+## Safe Usage Rules
 
 - `cycle_id` is a shared sparse axis across experiments
 - the xarray indexes are the named coordinates `experiment_id`, `cycle_id`, and `hostname`
-- selecting one `experiment_id` leaves a `cycle_id x hostname` slice
-- selecting one `(experiment_id, cycle_id)` pair leaves one rover pose plus one CSI vector over hostnames
 - `csi_available` is the authoritative mask for whether a host/cycle entry exists
 - rover coordinates can still be `NaN`, so always check `position_available` and finite coordinates before using a pose
 - some original rover stops may be absent because duplicate consecutive positions are filtered before the dataset is written
+
+Safe starting pattern:
+
+```python
+exp = ds.sel(experiment_id="EXP003")
+cycle_mask = exp["csi_available"].any(dim="hostname")
+cycle_ids = exp["cycle_id"].values[cycle_mask.values]
+
+csi = (exp["csi_real"] + 1j * exp["csi_imag"]).sel(cycle_id=cycle_ids)
+position_ok = (
+    exp["position_available"].sel(cycle_id=cycle_ids) > 0
+) & (
+    np.isfinite(exp["rover_x"].sel(cycle_id=cycle_ids))
+) & (
+    np.isfinite(exp["rover_y"].sel(cycle_id=cycle_ids))
+) & (
+    np.isfinite(exp["rover_z"].sel(cycle_id=cycle_ids))
+)
+```
+
+## If You Need Provenance Or Extraction Details
+
+Most users can stop here and move on to the notebooks.
+
+If you are one of the maintainers who needs to know how the `.nc` file was built from raw RF logs and rover positions, see:
+
+- [RF Post-Processing](../reference/rf-post-processing/)
+- [Data Products](../reference/data-products/)
+- [Deployment and Acquisition](../reference/deployment-and-acquisition/)
 
 Once you have a `.nc` file, continue with:
 

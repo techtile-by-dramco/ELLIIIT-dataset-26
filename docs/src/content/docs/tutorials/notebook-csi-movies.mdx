@@ -1,0 +1,33 @@
+---
+title: "Notebook: CSI Movies"
+description: Embedded tutorial notebook for exporting merged-dataset CSI phase and power MP4s.
+status: stable
+component: rf
+---
+
+import NotebookEmbed from "../../../components/NotebookEmbed.astro";
+import { publicUrl } from "../../../utils/public-url";
+
+This notebook exports two MP4 files from the processed RF xarray. It merges the selected experiment IDs into one measurement sequence, samples frames evenly when needed, and writes one phase movie plus one power movie.
+
+The videos below are generated from the same helper functions used in the notebook, against the latest merged dataset currently committed for the docs.
+
+<video
+  controls
+  src={publicUrl("media/phase_rover_merged.mp4")}
+  style="width: 100%; border-radius: 1rem; margin-bottom: 1rem;"
+></video>
+
+<video
+  controls
+  src={publicUrl("media/power_rover_merged.mp4")}
+  style="width: 100%; border-radius: 1rem; margin-bottom: 1rem;"
+></video>
+
+The content below is rendered directly from the source notebook in `processing/tutorial_csi_movies.ipynb`.
+
+<NotebookEmbed
+  title="CSI Movies Notebook"
+  htmlPath="notebooks/tutorial_csi_movies.html"
+  notebookPath="notebooks/tutorial_csi_movies.ipynb"
+/>
