@@ -2,10 +2,14 @@
 
 This repository contains the acquisition, orchestration, storage, and processing code used to collect the ELLIIIT acoustic and RF dataset inside Techtile.
 
+![holder](holder.jpg)
+
 The README is organized in two views:
 
 1. View 1 is a tutorial for dataset users who need to understand what was measured, how one measurement should be interpreted, and which files belong together.
 2. View 2 is a reference for operators and developers who need to deploy the system, run new acquisitions, or extend the control plane.
+
+
 
 ## Contents
 
@@ -917,6 +921,16 @@ server/close-sockets.sh
 
 This is useful when ports such as `5555`, `5557`, `5558`, `5559`, `5678`, `5679`, or `50001` remain bound after a crash or a suspended process.
 
+## Measurement Setup
+
+The following images provide an overview of the measurement setup:
+
+| ![photo1](photo1.jpg) | ![photo2](photo2.jpg) |
+|-----------------------|-----------------------|
+
+![video](video.gif)
+
+
 ## Summary
 
 For data users, the core mental model is:
@@ -929,3 +943,5 @@ For data users, the core mental model is:
 For RF analysis, `experiment_id` and `cycle_id` are the main keys.
 
 For acoustic analysis, the data is recorded per cycle but currently needs timestamp and log-based matching because the saved CSVs do not yet embed those identifiers directly.
+
+
