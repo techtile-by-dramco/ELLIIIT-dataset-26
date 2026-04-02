@@ -48,6 +48,14 @@ htmlcov/
 # Docs site
 docs/node_modules/
 docs/.astro/
+
+# Committed docs assets used by GitHub Pages and the repo README
+!docs/public/images/
+!docs/public/images/**
+!docs/public/media/
+!docs/public/media/**
+
+# Generated notebook exports are rebuilt during the docs build
 docs/public/notebooks/*.html
 docs/public/notebooks/*.ipynb
 !docs/public/notebooks/.gitkeep
