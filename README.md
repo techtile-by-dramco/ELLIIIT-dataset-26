@@ -2,7 +2,9 @@
 
 This repository contains the acquisition, orchestration, storage, and processing code used to collect the ELLIIIT acoustic and RF dataset inside Techtile.
 
-![holder](holder.jpg)
+<p align="center">
+  <img src="holder.jpg" width="250">
+</p>
 
 The README is organized in two views:
 
@@ -927,9 +929,6 @@ The following images provide an overview of the measurement setup:
 
 | ![photo1](photo1.jpg) | ![photo2](photo2.jpg) |
 |-----------------------|-----------------------|
-
-![video](video.gif)
-
 
 ## Summary
 
