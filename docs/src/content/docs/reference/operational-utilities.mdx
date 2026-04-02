@@ -5,6 +5,8 @@ status: stable
 component: operations
 ---
 
+import { publicUrl } from "../../../utils/public-url";
+
 ## Rover sweep preview
 
 To preview the configured sweep before running the rover:
@@ -15,7 +17,10 @@ python client/rover/ZMQclient_rover.py --preview-sweeps --config-file client/rov
 
 This writes a PNG preview next to the rover config by default.
 
-![Rover sweep preview](../../images/config_sweep_preview.png)
+<img
+  src={publicUrl("images/config_sweep_preview.png")}
+  alt="Rover sweep preview"
+/>
 
 ## RF runtime failure summary
 
@@ -35,4 +40,7 @@ The notebook-backed tutorial pages are the fastest way to verify:
 - phase evolution over the active aperture
 - amplitude or power patterns for selected cycles
 
-![Overview animation preview](../../images/video.gif)
+<img
+  src={publicUrl("images/video.gif")}
+  alt="Overview animation preview"
+/>

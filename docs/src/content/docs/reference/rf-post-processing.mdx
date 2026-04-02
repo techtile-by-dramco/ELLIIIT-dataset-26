@@ -5,6 +5,8 @@ status: stable
 component: rf
 ---
 
+import { publicUrl } from "../../../utils/public-url";
+
 The active RF post-processing path is:
 
 - `processing/extract_csi_from_smb_v2.py`
@@ -42,6 +44,14 @@ The recommended analysis workflow is now published as notebook-backed docs pages
 
 Example videos from an earlier processed run:
 
-<video controls src="../../media/phase_rover_EXP003.mp4" style="width: 100%; border-radius: 1rem; margin-bottom: 1rem;"></video>
+<video
+  controls
+  src={publicUrl("media/phase_rover_EXP003.mp4")}
+  style="width: 100%; border-radius: 1rem; margin-bottom: 1rem;"
+></video>
 
-<video controls src="../../media/power_rover_EXP003.mp4" style="width: 100%; border-radius: 1rem;"></video>
+<video
+  controls
+  src={publicUrl("media/power_rover_EXP003.mp4")}
+  style="width: 100%; border-radius: 1rem;"
+></video>

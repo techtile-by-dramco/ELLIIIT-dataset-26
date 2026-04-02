@@ -5,7 +5,13 @@ status: stable
 component: dataset
 ---
 
-<img src="images/holder.jpg" alt="ELLIIIT measurement rig" style="width: 240px; border-radius: 1rem;" />
+import { publicUrl } from "../../utils/public-url";
+
+<img
+  src={publicUrl("images/holder.jpg")}
+  alt="ELLIIIT measurement rig"
+  style="width: 240px; border-radius: 1rem;"
+/>
 
 This site is the user-facing documentation for the ELLIIIT dataset repository. It is organized in two tracks:
 
