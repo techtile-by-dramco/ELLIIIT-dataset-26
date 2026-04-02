@@ -320,6 +320,7 @@ class PositioningRuntime:
     log_file: Optional[TextIO] = None
     log_writer: Optional[csv.DictWriter] = None
     log_path: Optional[Path] = None
+    last_consumed_position: Any = None
 
 
 class ShutdownRequested(Exception):
@@ -402,6 +403,18 @@ def close_positioning_runtime(runtime: PositioningRuntime) -> None:
         runtime.log_file.close()
 
 
+def get_fresh_position_sample(runtime: PositioningRuntime) -> tuple[Any | None, str | None]:
+    position = runtime.positioner.get_data()
+    if position is None:
+        return None, "Positioner returned no data."
+
+    if runtime.last_consumed_position is position:
+        return None, "Positioner had no new update; stale sample suppressed."
+
+    runtime.last_consumed_position = position
+    return position, None
+
+
 def capture_and_log_position(
     runtime: PositioningRuntime,
     *,
@@ -430,9 +443,9 @@ def capture_and_log_position(
     }
 
     try:
-        position = runtime.positioner.get_data()
+        position, no_data_reason = get_fresh_position_sample(runtime)
         if position is None:
-            row["error"] = "Positioner returned no data."
+            row["error"] = no_data_reason or "Positioner returned no data."
         else:
             row["position_status"] = "ok"
             row["position_t"] = getattr(position, "t", "")
