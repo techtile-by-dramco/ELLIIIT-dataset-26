@@ -552,20 +552,68 @@ What this does:
 4. It joins the RF rows with the rover position file.
 5. It writes `processing/csi_<experiment_id>.nc`.
 
+Filtering applied along the way:
+
+- At logging time, `server/zmq_orchestrator.py` writes `position_status = no_data` and empty `x/y/z` fields when the positioner has no fresh update. This prevents stale Qualisys samples from being logged as new rover poses.
+- At extraction time, `processing/extract_csi_from_smb.py` and `processing/extract_csi_from_smb_v2.py` remove consecutive cycles whose rover position is effectively unchanged from the last kept cycle for the same experiment.
+- The duplicate-position tolerance is taken from `client/rover/config.yaml` as `grid.min_spacing / 5` per axis.
+- Because `grid.min_spacing` is configured in millimeters while the logged Qualisys coordinates are in meters, the extractor converts that tolerance to meters before filtering.
+- When a cycle is removed by this duplicate-position filter, both the position row and all CSI rows for that `(experiment_id, cycle_id)` are removed from the resulting xarray dataset.
+
 ### Step 4. Open the NetCDF and Read It Correctly
 
-Once `processing/csi_<experiment_id>.nc` exists, open it in xarray and use these axes:
+Once `processing/csi_<experiment_id>.nc` exists, open it in xarray. This file is the main RF-based measurement xarray produced by the repository.
+
+Use these coordinates:
 
 - `experiment_id`
 - `cycle_id`
 - `hostname`
 
-The most important variables are:
+Variable layout:
 
-- `rover_x`, `rover_y`, `rover_z`
-- `position_available`
-- `csi_real`, `csi_imag`
-- `csi_available`
+- `rover_x`, `rover_y`, `rover_z`: shape `(experiment_id, cycle_id)`
+- `position_available`: shape `(experiment_id, cycle_id)`
+- `csi_real`, `csi_imag`: shape `(experiment_id, cycle_id, hostname)`
+- `csi_available`: shape `(experiment_id, cycle_id, hostname)`
+
+Meaning:
+
+- `rover_x`, `rover_y`, `rover_z` are the joined Qualisys rover coordinates for that experiment and cycle.
+- `position_available == 1` means the position row reported `position_status == ok`.
+- `csi_real + 1j * csi_imag` is the cable-corrected complex RF quantity per host and cycle.
+- `csi_available == 1` means that host contributed a usable RF record for that experiment and cycle.
+
+Important structural detail:
+
+- `cycle_id` is a shared coordinate axis across the dataset, not a guarantee that every experiment has RF data for every listed cycle.
+- Always use `csi_available` to determine which cycles and hostnames are actually populated for a given experiment.
+- Rover coordinates can still be `NaN` even when a CSI row exists, so check both `position_available` and finite coordinates before using a rover pose.
+- Consecutive duplicate rover positions may already have been filtered out by the extractor before the NetCDF file is written.
+
+The dataset also carries summary metadata in `ds.attrs`. Current extractor output includes:
+
+- `description`
+- `csi_definition`
+- `csi_pair_count`
+- `matched_position_rows`
+- `missing_position_rows`
+- `valid_position_rows`
+- `invalid_status_rows`
+- `missing_coordinate_rows`
+- `invalid_or_missing_position_rows`
+- `duplicate_position_filter_enabled`
+- `duplicate_position_filter_rover_config_path`
+- `duplicate_position_filter_min_spacing_mm`
+- `duplicate_position_filter_axis_tolerance_m`
+- `duplicate_position_filtered_cycles`
+- `duplicate_position_filtered_position_rows`
+- `duplicate_position_filtered_csi_rows`
+- `last_measurement_timestamp`
+- `last_measurement_timestamp_source`
+- `last_measurement_source_path`
+
+The timestamp metadata is taken from the processed source file modification time in the current extractor implementation.
 
 Reconstruct the complex RF quantity as:
 
@@ -573,6 +621,25 @@ Reconstruct the complex RF quantity as:
 csi = ds["csi_real"] + 1j * ds["csi_imag"]
 phase = np.angle(csi)
 amplitude = np.abs(csi)
+```
+
+A safe starting pattern for one experiment is:
+
+```python
+exp = ds.sel(experiment_id="EXP003")
+cycle_mask = exp["csi_available"].any(dim="hostname")
+cycle_ids = exp["cycle_id"].values[cycle_mask.values]
+
+csi = (exp["csi_real"] + 1j * exp["csi_imag"]).sel(cycle_id=cycle_ids)
+position_ok = (
+    exp["position_available"].sel(cycle_id=cycle_ids) > 0
+) & (
+    np.isfinite(exp["rover_x"].sel(cycle_id=cycle_ids))
+) & (
+    np.isfinite(exp["rover_y"].sel(cycle_id=cycle_ids))
+) & (
+    np.isfinite(exp["rover_z"].sel(cycle_id=cycle_ids))
+)
 ```
 
 Interpretation notes:
@@ -777,7 +844,8 @@ It performs:
 3. Recover `experiment_id`, `cycle_id`, `hostname`, `pilot_phase`, and `pilot_amplitude`.
 4. Apply the cable correction from `client/ref-RF-cable.yml`.
 5. Join with rover positions from `server/record/data/exp-*-positions.csv`.
-6. Write one NetCDF dataset.
+6. Drop consecutive duplicate-position cycles using `grid.min_spacing / 5` per axis from `client/rover/config.yaml`.
+7. Write one NetCDF dataset.
 
 The resulting dataset contains:
 
@@ -785,15 +853,30 @@ The resulting dataset contains:
   - `experiment_id`
   - `cycle_id`
   - `hostname`
-- rover variables:
+- rover variables with shape `(experiment_id, cycle_id)`:
   - `rover_x`
   - `rover_y`
   - `rover_z`
   - `position_available`
-- RF variables:
+- RF variables with shape `(experiment_id, cycle_id, hostname)`:
   - `csi_real`
   - `csi_imag`
   - `csi_available`
+- dataset attributes:
+  - `description`
+  - `csi_definition`
+  - coverage counts such as `csi_pair_count`, `valid_position_rows`, and `invalid_or_missing_position_rows`
+  - duplicate-position filter metadata such as `duplicate_position_filter_axis_tolerance_m` and `duplicate_position_filtered_cycles`
+  - the most recent processed measurement metadata: `last_measurement_timestamp`, `last_measurement_timestamp_source`, `last_measurement_source_path`
+
+Practical xarray interpretation:
+
+- The file is an RF-plus-position cube indexed by experiment, orchestrator cycle, and receiver hostname.
+- `csi_real + 1j * csi_imag` reconstructs the complex RF measurement.
+- `csi_available` is the authoritative mask for whether a given host/cycle entry exists.
+- `position_available` plus finite `rover_x`, `rover_y`, `rover_z` indicates whether the rover pose is usable for that CSI cycle.
+- In the active `extract_csi_from_smb_v2.py` path, only experiment/cycle pairs that appear in the extracted CSI rows are kept. Cycles are still stored on a shared `cycle_id` axis, so sparse regions are normal when multiple experiments are combined.
+- Some original rover stops may be absent from the NetCDF file because the extractor filters consecutive duplicate positions before writing the dataset.
 
 Useful commands:
 

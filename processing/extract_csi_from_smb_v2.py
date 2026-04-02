@@ -35,9 +35,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_SETTINGS_FILE = REPO_ROOT / "experiment-settings.yaml"
 DEFAULT_CABLE_FILE = REPO_ROOT / "client" / "ref-RF-cable.yml"
 DEFAULT_POSITIONS_ROOT = REPO_ROOT / "server" / "record" / "data"
+DEFAULT_ROVER_CONFIG = REPO_ROOT / "client" / "rover" / "config.yaml"
 DEFAULT_OUTPUT_FILE = REPO_ROOT / "processing" / "csi.nc"
 DEFAULT_DATA_ROOT = Path(r"\\10.128.48.9\elliit") if os.name == "nt" else None
 DEFAULT_WORKERS = min(16, max(4, os.cpu_count() or 1))
+EXPERIMENTS = ["EXP003", "EXP005", "EXP006"]  # Set to [] or None to include all experiments by default.
 RESULT_FILE_SUFFIXES = {".json", ".jsonl", ".txt", ".log"}
 FLOAT_PATTERN = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
 INTEGER_PATTERN = r"[-+]?\d+"
@@ -95,6 +97,7 @@ KEY_VALUE_PATTERN = re.compile(r"^\s*([A-Za-z0-9_. -]+?)\s*[:=]\s*(.*?)\s*$")
 
 
 def parse_args() -> argparse.Namespace:
+    default_experiment_ids = normalize_experiment_ids(EXPERIMENTS)
     parser = argparse.ArgumentParser(
         description=(
             "Read host JSON/JSONL result files from experiment storage, join them "
@@ -130,6 +133,15 @@ def parse_args() -> argparse.Namespace:
         help="YAML file that maps hostname to phi_cable in degrees.",
     )
     parser.add_argument(
+        "--rover-config",
+        type=Path,
+        default=DEFAULT_ROVER_CONFIG,
+        help=(
+            "Rover config used to read grid.min_spacing for duplicate-position filtering. "
+            "Consecutive positions within min_spacing/5 per axis are removed."
+        ),
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=DEFAULT_OUTPUT_FILE,
@@ -150,12 +162,48 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_WORKERS,
         help="Number of worker threads used for per-file CSI extraction.",
     )
+    parser.add_argument(
+        "--experiment-id",
+        dest="experiment_ids",
+        action="append",
+        default=None,
+        metavar="EXP_ID",
+        help=(
+            "Only include the given experiment ID in the output dataset. "
+            "Repeat this option or pass comma-separated values to combine multiple "
+            "experiment IDs into one NetCDF file. If omitted, the top-level "
+            f"EXPERIMENTS variable is used: {default_experiment_ids or 'all experiments'}."
+        ),
+    )
     args = parser.parse_args()
     if args.max_measurements is not None and args.max_measurements <= 0:
         parser.error("--max-measurements must be a positive integer.")
     if args.workers <= 0:
         parser.error("--workers must be a positive integer.")
+    args.experiment_ids = normalize_experiment_ids(args.experiment_ids, parser)
+    if args.experiment_ids is None:
+        args.experiment_ids = list(default_experiment_ids) if default_experiment_ids else None
     return args
+
+
+def normalize_experiment_ids(
+    raw_values: Iterable[str] | None,
+    parser: argparse.ArgumentParser | None = None,
+) -> list[str] | None:
+    if not raw_values:
+        return None
+
+    experiment_ids: list[str] = []
+    for raw_value in raw_values:
+        for experiment_id in str(raw_value).split(","):
+            experiment_id = experiment_id.strip()
+            if experiment_id:
+                experiment_ids.append(experiment_id)
+
+    experiment_ids = list(dict.fromkeys(experiment_ids))
+    if not experiment_ids and parser is not None:
+        parser.error("--experiment-id must include at least one non-empty value.")
+    return experiment_ids or None
 
 
 def load_yaml_mapping(path: Path) -> dict[str, Any]:
@@ -164,6 +212,28 @@ def load_yaml_mapping(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"Expected a YAML mapping in {path}, got {type(data).__name__}.")
     return data
+
+
+def load_duplicate_position_filter_settings(rover_config_path: Path) -> dict[str, Any]:
+    rover_config = load_yaml_mapping(rover_config_path)
+    grid = rover_config.get("grid")
+    if not isinstance(grid, dict):
+        raise ValueError(f"Missing grid block in rover config: {rover_config_path}")
+
+    min_spacing_raw = grid.get("min_spacing")
+    if min_spacing_raw in ("", None):
+        raise ValueError(f"Missing grid.min_spacing in rover config: {rover_config_path}")
+
+    min_spacing_mm = float(min_spacing_raw)
+    if min_spacing_mm <= 0:
+        raise ValueError(f"grid.min_spacing must be positive in {rover_config_path}")
+
+    axis_tolerance_m = (min_spacing_mm / 5.0) / 1000.0
+    return {
+        "rover_config_path": str(rover_config_path),
+        "min_spacing_mm": min_spacing_mm,
+        "axis_tolerance_m": axis_tolerance_m,
+    }
 
 
 def configure_logging() -> None:
@@ -697,6 +767,8 @@ def find_cable_phase(
 def build_csi_row(
     record: dict[str, Any],
     phi_cable_deg: float,
+    measurement_timestamp: str,
+    measurement_source_path: Path,
 ) -> dict[str, Any]:
     pilot_phase = float(record["pilot_phase"])
     pilot_amplitude = float(record["pilot_amplitude"])
@@ -710,6 +782,8 @@ def build_csi_row(
         "hostname": record["hostname"],
         "csi_real": float(np.real(csi)),
         "csi_imag": float(np.imag(csi)),
+        "measurement_timestamp": measurement_timestamp,
+        "measurement_source_path": str(measurement_source_path),
     }
 
 
@@ -719,6 +793,9 @@ def extract_csi_rows_from_file(
     cable_phases: dict[str, float],
 ) -> list[dict[str, Any]]:
     logger.info("Reading result file %s", result_file)
+    measurement_timestamp = datetime.fromtimestamp(
+        result_file.stat().st_mtime
+    ).astimezone().isoformat(timespec="seconds")
     records = extract_records_from_file(result_file, host_folder)
     if not records:
         logger.info("No usable records found in %s", result_file)
@@ -736,7 +813,14 @@ def extract_csi_rows_from_file(
                 f"No cable phase found for hostname '{record['hostname']}' "
                 f"(folder '{record['host_folder']}')."
             )
-        rows.append(build_csi_row(record, phi_cable_deg))
+        rows.append(
+            build_csi_row(
+                record,
+                phi_cable_deg,
+                measurement_timestamp,
+                result_file,
+            )
+        )
     return rows
 
 
@@ -745,9 +829,11 @@ def collect_csi_rows(
     cable_phases: dict[str, float],
     max_measurements: int | None = None,
     workers: int = DEFAULT_WORKERS,
+    experiment_ids: Iterable[str] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     rows: list[dict[str, Any]] = []
     skipped_files = 0
+    selected_experiment_ids = set(str(experiment_id) for experiment_id in (experiment_ids or []))
     host_dirs = sorted(path for path in data_root.iterdir() if path.is_dir())
     logger.info("Found %d hostname folders under %s", len(host_dirs), data_root)
     work_items: list[tuple[str, Path]] = []
@@ -774,6 +860,24 @@ def collect_csi_rows(
             host_dir.name,
             len(candidate_files),
         )
+        if selected_experiment_ids:
+            filtered_candidate_files: list[Path] = []
+            for result_file in candidate_files:
+                parsed_experiment_id = parse_experiment_id_from_result_file(result_file, [host_dir.name])
+                if (
+                    parsed_experiment_id is not None
+                    and parsed_experiment_id not in selected_experiment_ids
+                ):
+                    continue
+                filtered_candidate_files.append(result_file)
+            candidate_files = filtered_candidate_files
+            logger.info(
+                "Host folder %s: %d result files remain after experiment filter",
+                host_dir.name,
+                len(candidate_files),
+            )
+            if not candidate_files:
+                continue
         for result_file in candidate_files:
             work_items.append((host_dir.name, result_file))
 
@@ -815,6 +919,17 @@ def collect_csi_rows(
         deduped.values(),
         key=lambda row: (str(row["experiment_id"]), int(row["cycle_id"]), str(row["hostname"])),
     )
+    if selected_experiment_ids:
+        filtered_rows = [
+            row for row in deduped_rows if str(row["experiment_id"]) in selected_experiment_ids
+        ]
+        logger.info(
+            "Applied experiment filter: kept %d of %d unique CSI rows for %s",
+            len(filtered_rows),
+            len(deduped_rows),
+            ", ".join(sorted(selected_experiment_ids)),
+        )
+        deduped_rows = filtered_rows
     if max_measurements is not None:
         limited_rows: list[dict[str, Any]] = []
         host_counts: dict[str, int] = {}
@@ -839,12 +954,16 @@ def collect_csi_rows(
     return deduped_rows, skipped_files
 
 
-def load_positions(positions_root: Path) -> list[dict[str, Any]]:
+def load_positions(
+    positions_root: Path,
+    experiment_ids: Iterable[str] | None = None,
+) -> list[dict[str, Any]]:
     positions_root = positions_root.expanduser().resolve()
     if not positions_root.exists():
         raise FileNotFoundError(f"Positions directory does not exist: {positions_root}")
 
     position_rows: dict[tuple[str, int], dict[str, Any]] = {}
+    selected_experiment_ids = set(str(experiment_id) for experiment_id in (experiment_ids or []))
     position_files = sorted(positions_root.glob("exp-*-positions.csv"))
     logger.info(
         "Reading positions from %s (%d matching files)",
@@ -858,12 +977,21 @@ def load_positions(positions_root: Path) -> list[dict[str, Any]]:
             continue
 
         fallback_experiment_id = match.group("experiment_id")
+        if selected_experiment_ids and fallback_experiment_id not in selected_experiment_ids:
+            logger.info(
+                "Skipping positions file %s: experiment_id %s not selected",
+                path,
+                fallback_experiment_id,
+            )
+            continue
         with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
             reader = csv.DictReader(handle)
             for row in reader:
                 experiment_id = str(row.get("experiment_id") or fallback_experiment_id).strip()
                 cycle_raw = row.get("cycle_id")
                 if not experiment_id or cycle_raw in ("", None):
+                    continue
+                if selected_experiment_ids and experiment_id not in selected_experiment_ids:
                     continue
 
                 try:
@@ -884,6 +1012,121 @@ def load_positions(positions_root: Path) -> list[dict[str, Any]]:
     rows = list(position_rows.values())
     logger.info("Loaded %d unique position rows", len(rows))
     return rows
+
+
+def summarize_position_coverage(
+    csi_rows: list[dict[str, Any]],
+    position_rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    relevant_pairs = {
+        (str(row["experiment_id"]), int(row["cycle_id"]))
+        for row in csi_rows
+    }
+    position_row_map = {
+        (str(row["experiment_id"]), int(row["cycle_id"])): row
+        for row in position_rows
+    }
+    relevant_position_rows = [
+        position_row_map[pair]
+        for pair in sorted(relevant_pairs)
+        if pair in position_row_map
+    ]
+    missing_position_rows = len(relevant_pairs) - len(relevant_position_rows)
+
+    invalid_status_rows = 0
+    missing_coordinate_rows = 0
+    invalid_or_missing_rows = 0
+    for row in relevant_position_rows:
+        has_valid_status = bool(row["position_available"] > 0)
+        has_coordinates = bool(
+            np.isfinite([row["x"], row["y"], row["z"]]).all()
+        )
+        if not has_valid_status:
+            invalid_status_rows += 1
+        if not has_coordinates:
+            missing_coordinate_rows += 1
+        if not (has_valid_status and has_coordinates):
+            invalid_or_missing_rows += 1
+
+    valid_position_rows = len(relevant_position_rows) - invalid_or_missing_rows
+    coverage = {
+        "csi_pair_count": len(relevant_pairs),
+        "matched_position_rows": len(relevant_position_rows),
+        "missing_position_rows": missing_position_rows,
+        "valid_position_rows": valid_position_rows,
+        "invalid_status_rows": invalid_status_rows,
+        "missing_coordinate_rows": missing_coordinate_rows,
+        "invalid_or_missing_position_rows": (
+            missing_position_rows + invalid_or_missing_rows
+        ),
+    }
+    return relevant_position_rows, coverage
+
+
+def filter_duplicate_position_cycles(
+    csi_rows: list[dict[str, Any]],
+    position_rows: list[dict[str, Any]],
+    *,
+    axis_tolerance_m: float,
+    min_spacing_mm: float,
+    rover_config_path: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    dropped_pairs: set[tuple[str, int]] = set()
+    filtered_position_rows: list[dict[str, Any]] = []
+    last_kept_coords_by_experiment: dict[str, np.ndarray] = {}
+
+    for row in sorted(position_rows, key=lambda item: (str(item["experiment_id"]), int(item["cycle_id"]))):
+        experiment_id = str(row["experiment_id"])
+        pair = (experiment_id, int(row["cycle_id"]))
+        coords = np.asarray([row["x"], row["y"], row["z"]], dtype=float)
+
+        previous_coords = last_kept_coords_by_experiment.get(experiment_id)
+        if previous_coords is not None and np.isfinite(coords).all():
+            if bool(np.all(np.abs(coords - previous_coords) <= axis_tolerance_m)):
+                dropped_pairs.add(pair)
+                continue
+
+        filtered_position_rows.append(row)
+        if np.isfinite(coords).all():
+            last_kept_coords_by_experiment[experiment_id] = coords
+
+    filtered_csi_rows = [
+        row
+        for row in csi_rows
+        if (str(row["experiment_id"]), int(row["cycle_id"])) not in dropped_pairs
+    ]
+    removed_csi_rows = len(csi_rows) - len(filtered_csi_rows)
+
+    summary = {
+        "duplicate_position_filter_enabled": 1,
+        "duplicate_position_filter_rover_config_path": str(rover_config_path),
+        "duplicate_position_filter_min_spacing_mm": float(min_spacing_mm),
+        "duplicate_position_filter_axis_tolerance_m": float(axis_tolerance_m),
+        "duplicate_position_filtered_cycles": len(dropped_pairs),
+        "duplicate_position_filtered_position_rows": len(position_rows) - len(filtered_position_rows),
+        "duplicate_position_filtered_csi_rows": removed_csi_rows,
+    }
+
+    if dropped_pairs:
+        logger.info(
+            "Filtered %d duplicate-position cycles using axis tolerance %.6f m "
+            "(min_spacing=%.3f mm from %s); removed %d CSI rows",
+            summary["duplicate_position_filtered_cycles"],
+            axis_tolerance_m,
+            min_spacing_mm,
+            rover_config_path,
+            removed_csi_rows,
+        )
+    else:
+        logger.info(
+            "Duplicate-position filter found no repeated cycles using axis tolerance %.6f m "
+            "(min_spacing=%.3f mm from %s)",
+            axis_tolerance_m,
+            min_spacing_mm,
+            rover_config_path,
+        )
+
+    return filtered_csi_rows, filtered_position_rows, summary
 
 
 def build_dataset(
@@ -913,17 +1156,31 @@ def build_dataset(
     z = np.full(position_shape, np.nan, dtype=np.float64)
     position_available = np.zeros(position_shape, dtype=np.float32)
 
-    relevant_position_rows = [
-        row
-        for row in position_rows
-        if (str(row["experiment_id"]), int(row["cycle_id"])) in relevant_pairs
-    ]
-    ignored_position_rows = len(position_rows) - len(relevant_position_rows)
+    relevant_position_rows, position_coverage = summarize_position_coverage(
+        csi_rows,
+        position_rows,
+    )
+    ignored_position_rows = len(position_rows) - position_coverage["matched_position_rows"]
     if ignored_position_rows:
         logger.info(
             "Ignoring %d position rows without matching CSI data",
             ignored_position_rows,
         )
+    if position_coverage["missing_position_rows"]:
+        logger.warning(
+            "Missing %d position rows for extracted CSI experiment_id/cycle_id pairs",
+            position_coverage["missing_position_rows"],
+        )
+    logger.info(
+        "Position coverage for CSI pairs: valid=%d invalid_or_missing=%d "
+        "(invalid_status=%d missing_coordinates=%d missing_rows=%d total_pairs=%d)",
+        position_coverage["valid_position_rows"],
+        position_coverage["invalid_or_missing_position_rows"],
+        position_coverage["invalid_status_rows"],
+        position_coverage["missing_coordinate_rows"],
+        position_coverage["missing_position_rows"],
+        position_coverage["csi_pair_count"],
+    )
     if not relevant_position_rows:
         logger.warning(
             "No position rows matched the extracted CSI experiment_id/cycle_id pairs. "
@@ -956,6 +1213,19 @@ def build_dataset(
         len(cycle_ids),
         len(hostnames),
     )
+    dataset_attrs = {
+        "description": "Rover positions and per-host CSI joined on experiment_id and cycle_id.",
+        "csi_definition": (
+            "CSI is stored as csi_real + 1j * csi_imag. "
+            "Phase is np.angle(csi_real + 1j * csi_imag)."
+        ),
+        **position_coverage,
+    }
+    last_measurement = summarize_last_measurement(csi_rows)
+    if last_measurement is not None:
+        dataset_attrs["last_measurement_timestamp"] = last_measurement["timestamp"]
+        dataset_attrs["last_measurement_timestamp_source"] = "source file mtime"
+        dataset_attrs["last_measurement_source_path"] = last_measurement["source_path"]
     dataset = xr.Dataset(
         data_vars={
             "rover_x": (("experiment_id", "cycle_id"), x),
@@ -971,13 +1241,7 @@ def build_dataset(
             "cycle_id": np.asarray(cycle_ids, dtype=np.int64),
             "hostname": np.asarray(hostnames, dtype=str),
         },
-        attrs={
-            "description": "Rover positions and per-host CSI joined on experiment_id and cycle_id.",
-            "csi_definition": (
-                "CSI is stored as csi_real + 1j * csi_imag. "
-                "Phase is np.angle(csi_real + 1j * csi_imag)."
-            ),
-        },
+        attrs=dataset_attrs,
     )
     return dataset
 
@@ -1004,49 +1268,298 @@ def write_dataset(dataset: xr.Dataset, output_file: Path) -> Path:
     return write_target
 
 
+def format_summary_list(values: Iterable[Any], max_items: int = 6) -> str:
+    items = [str(value) for value in values]
+    if len(items) <= max_items:
+        return ", ".join(items)
+    visible_items = items[:max_items]
+    return ", ".join(visible_items) + f", ... (+{len(items) - max_items} more)"
+
+
+def find_first_position_issue(
+    cycle_ids: np.ndarray,
+    valid_position_mask: np.ndarray,
+) -> dict[str, Any] | None:
+    cycle_ids = np.asarray(cycle_ids, dtype=int)
+    valid_position_mask = np.asarray(valid_position_mask, dtype=bool)
+    issue_indices = np.flatnonzero(~valid_position_mask)
+    if issue_indices.size == 0:
+        return None
+
+    issue_index = int(issue_indices[0])
+    if issue_index == 0:
+        reason = "position unavailable from first CSI cycle"
+    elif valid_position_mask[issue_index - 1]:
+        reason = "position lost after previous CSI cycle"
+    else:
+        reason = "position still unavailable"
+    return {
+        "cycle_id": int(cycle_ids[issue_index]),
+        "reason": reason,
+    }
+
+
+def find_first_csi_drop(
+    cycle_ids: np.ndarray,
+    host_counts: np.ndarray,
+) -> dict[str, Any] | None:
+    cycle_ids = np.asarray(cycle_ids, dtype=int)
+    host_counts = np.asarray(host_counts, dtype=int)
+    if host_counts.size < 2:
+        return None
+
+    drop_indices = np.flatnonzero(host_counts[1:] < host_counts[:-1]) + 1
+    if drop_indices.size == 0:
+        return None
+
+    drop_index = int(drop_indices[0])
+    return {
+        "cycle_id": int(cycle_ids[drop_index]),
+        "previous_host_count": int(host_counts[drop_index - 1]),
+        "host_count": int(host_counts[drop_index]),
+    }
+
+
+def summarize_last_measurement(
+    csi_rows: list[dict[str, Any]],
+    experiment_id: str | None = None,
+) -> dict[str, str] | None:
+    relevant_rows = csi_rows
+    if experiment_id is not None:
+        relevant_rows = [
+            row for row in csi_rows if str(row["experiment_id"]) == str(experiment_id)
+        ]
+    relevant_rows = [
+        row for row in relevant_rows if row.get("measurement_timestamp")
+    ]
+    if not relevant_rows:
+        return None
+
+    latest_row = max(
+        relevant_rows,
+        key=lambda row: (
+            str(row["measurement_timestamp"]),
+            str(row.get("measurement_source_path", "")),
+            str(row["hostname"]),
+        ),
+    )
+    return {
+        "timestamp": str(latest_row["measurement_timestamp"]),
+        "source_path": str(latest_row.get("measurement_source_path", "")),
+    }
+
+
+def print_extraction_summary(
+    csi_rows: list[dict[str, Any]],
+    dataset: xr.Dataset,
+    *,
+    output_path: Path,
+    data_root: Path,
+    positions_root: Path,
+    skipped_files: int,
+) -> None:
+    experiment_ids = dataset.coords["experiment_id"].values.astype(str).tolist()
+    cycle_ids = dataset.coords["cycle_id"].values.astype(int)
+    hostnames = dataset.coords["hostname"].values.astype(str).tolist()
+
+    csi_available = dataset["csi_available"].values > 0
+    csi_pair_mask = csi_available.any(axis=2)
+    csi_pair_count = int(csi_pair_mask.sum())
+    csi_measurement_count = int(csi_available.sum())
+
+    has_coordinates = (
+        np.isfinite(dataset["rover_x"].values)
+        & np.isfinite(dataset["rover_y"].values)
+        & np.isfinite(dataset["rover_z"].values)
+    )
+    valid_position_mask = csi_pair_mask & (dataset["position_available"].values > 0) & has_coordinates
+    invalid_or_missing_mask = csi_pair_mask & ~valid_position_mask
+
+    print("Extraction summary:")
+    print(f"  Output dataset: {output_path}")
+    print(f"  CSI data root: {data_root}")
+    print(f"  Positions root: {positions_root}")
+    print(
+        "  Dataset dims: "
+        f"experiment_id={dataset.sizes['experiment_id']} "
+        f"cycle_id={dataset.sizes['cycle_id']} "
+        f"hostname={dataset.sizes['hostname']}"
+    )
+    print(
+        "  Experiments: "
+        f"{len(experiment_ids)} ({format_summary_list(experiment_ids)})"
+    )
+    print(
+        "  Hostnames: "
+        f"{len(hostnames)} ({format_summary_list(hostnames)})"
+    )
+    if cycle_ids.size:
+        print(
+            "  Cycle ID range: "
+            f"{int(cycle_ids.min())}..{int(cycle_ids.max())} "
+            f"({len(cycle_ids)} total cycle IDs in dataset)"
+        )
+    print(
+        "  CSI coverage: "
+        f"{csi_pair_count} experiment/cycle pairs with CSI, "
+        f"{csi_measurement_count} host measurements"
+    )
+    if "duplicate_position_filtered_cycles" in dataset.attrs:
+        print(
+            "  Duplicate-position filter: "
+            f"removed {int(dataset.attrs['duplicate_position_filtered_cycles'])} cycles "
+            f"and {int(dataset.attrs['duplicate_position_filtered_csi_rows'])} CSI rows "
+            f"(axis_tolerance={float(dataset.attrs['duplicate_position_filter_axis_tolerance_m']):.6f} m, "
+            f"min_spacing={float(dataset.attrs['duplicate_position_filter_min_spacing_mm']):.3f} mm)"
+        )
+    last_measurement = summarize_last_measurement(csi_rows)
+    if last_measurement is not None:
+        print(
+            "  Last measurement timestamp: "
+            f"{last_measurement['timestamp']} "
+            "(source file mtime)"
+        )
+    print(
+        "  Position coverage for CSI pairs: "
+        f"{int(dataset.attrs['valid_position_rows'])} valid, "
+        f"{int(dataset.attrs['invalid_or_missing_position_rows'])} invalid_or_missing "
+        f"(invalid_status={int(dataset.attrs['invalid_status_rows'])}, "
+        f"missing_coordinates={int(dataset.attrs['missing_coordinate_rows'])}, "
+        f"missing_rows={int(dataset.attrs['missing_position_rows'])})"
+    )
+
+    for exp_idx, experiment_id in enumerate(experiment_ids):
+        experiment_csi_pair_mask = csi_pair_mask[exp_idx]
+        cycles_with_csi = int(experiment_csi_pair_mask.sum())
+        if not cycles_with_csi:
+            continue
+        experiment_cycle_ids = cycle_ids[experiment_csi_pair_mask]
+        experiment_host_counts = csi_available[exp_idx, experiment_csi_pair_mask].sum(axis=1)
+        first_position_issue = find_first_position_issue(
+            experiment_cycle_ids,
+            valid_position_mask[exp_idx, experiment_csi_pair_mask],
+        )
+        first_csi_drop = find_first_csi_drop(
+            experiment_cycle_ids,
+            experiment_host_counts,
+        )
+        hosts_with_csi = int(csi_available[exp_idx].any(axis=0).sum())
+        valid_positions = int(valid_position_mask[exp_idx].sum())
+        invalid_or_missing_positions = int(invalid_or_missing_mask[exp_idx].sum())
+        if first_position_issue is None:
+            first_position_issue_summary = "none"
+        else:
+            first_position_issue_summary = (
+                f"cycle {first_position_issue['cycle_id']} "
+                f"({first_position_issue['reason']})"
+            )
+        if first_csi_drop is None:
+            first_csi_drop_summary = "none"
+        else:
+            first_csi_drop_summary = (
+                f"cycle {first_csi_drop['cycle_id']} "
+                f"({first_csi_drop['previous_host_count']} -> "
+                f"{first_csi_drop['host_count']} hosts)"
+            )
+        experiment_last_measurement = summarize_last_measurement(csi_rows, experiment_id)
+        if experiment_last_measurement is None:
+            last_measurement_summary = "none"
+        else:
+            last_measurement_summary = experiment_last_measurement["timestamp"]
+        print(
+            f"  {experiment_id}: cycles_with_csi={cycles_with_csi} "
+            f"hosts_with_csi={hosts_with_csi} "
+            f"valid_positions={valid_positions} "
+            f"invalid_or_missing_positions={invalid_or_missing_positions} "
+            f"first_position_issue={first_position_issue_summary} "
+            f"first_csi_drop={first_csi_drop_summary} "
+            f"last_measurement_timestamp={last_measurement_summary}"
+        )
+
+    if skipped_files:
+        print(f"  Skipped result files: {skipped_files}")
+
+
 def main() -> int:
     configure_logging()
     args = parse_args()
     args.config_file = args.config_file.expanduser().resolve()
     args.cable_file = args.cable_file.expanduser().resolve()
     args.positions_root = args.positions_root.expanduser().resolve()
+    args.rover_config = args.rover_config.expanduser().resolve()
     logger.info("Starting CSI extraction")
     logger.info("Config file: %s", args.config_file)
     logger.info("Positions root: %s", args.positions_root)
+    logger.info("Rover config: %s", args.rover_config)
     logger.info("Base output file: %s", args.output)
     logger.info("Worker threads: %d", args.workers)
+    if args.experiment_ids:
+        logger.info("Experiment filter: %s", ", ".join(args.experiment_ids))
     if args.max_measurements is not None:
         logger.info("Max measurements per hostname folder: %d", args.max_measurements)
 
     logger.info("Loading experiment settings from %s", args.config_file)
     settings = load_yaml_mapping(args.config_file)
     data_root = resolve_data_root(args, settings)
+    duplicate_position_filter = load_duplicate_position_filter_settings(args.rover_config)
+    logger.info(
+        "Duplicate-position filter axis tolerance: %.6f m (min_spacing=%.3f mm)",
+        duplicate_position_filter["axis_tolerance_m"],
+        duplicate_position_filter["min_spacing_mm"],
+    )
     cable_phases = load_cable_phases(args.cable_file)
     csi_rows, skipped_files = collect_csi_rows(
         data_root,
         cable_phases,
         max_measurements=args.max_measurements,
         workers=args.workers,
+        experiment_ids=args.experiment_ids,
     )
-    position_rows = load_positions(args.positions_root)
+    if not csi_rows and args.experiment_ids:
+        raise ValueError(
+            "No CSI rows were found for requested experiment IDs: "
+            + ", ".join(args.experiment_ids)
+        )
+    if args.experiment_ids:
+        found_experiment_ids = {str(row["experiment_id"]) for row in csi_rows}
+        missing_experiment_ids = [
+            experiment_id
+            for experiment_id in args.experiment_ids
+            if experiment_id not in found_experiment_ids
+        ]
+        if missing_experiment_ids:
+            logger.warning(
+                "Requested experiment IDs without matching CSI data: %s",
+                ", ".join(missing_experiment_ids),
+            )
+    position_rows = load_positions(args.positions_root, experiment_ids=args.experiment_ids)
+    csi_rows, position_rows, duplicate_position_summary = filter_duplicate_position_cycles(
+        csi_rows,
+        position_rows,
+        axis_tolerance_m=duplicate_position_filter["axis_tolerance_m"],
+        min_spacing_mm=duplicate_position_filter["min_spacing_mm"],
+        rover_config_path=args.rover_config,
+    )
+    if not csi_rows:
+        raise ValueError(
+            "All CSI rows were removed by the duplicate-position filter. "
+            "Check the rover min_spacing setting and logged position units."
+        )
     dataset = build_dataset(csi_rows, position_rows)
+    dataset.attrs.update(duplicate_position_summary)
     experiment_ids = [str(experiment_id) for experiment_id in dataset.coords["experiment_id"].values.tolist()]
     output_file = build_output_path(args.output, experiment_ids)
     logger.info("Experiment IDs in dataset: %s", ", ".join(experiment_ids))
     logger.info("Output file: %s", output_file)
     output_path = write_dataset(dataset, output_file)
-
-    print(f"CSI data root: {data_root}")
-    print(f"Positions root: {args.positions_root}")
-    print(f"Wrote dataset to {output_path}")
-    print(
-        "Dataset dims: "
-        f"experiment_id={dataset.sizes['experiment_id']} "
-        f"cycle_id={dataset.sizes['cycle_id']} "
-        f"hostname={dataset.sizes['hostname']}"
+    print_extraction_summary(
+        csi_rows,
+        dataset,
+        output_path=output_path,
+        data_root=data_root,
+        positions_root=args.positions_root,
+        skipped_files=skipped_files,
     )
-    if skipped_files:
-        print(f"Skipped {skipped_files} result files. See stderr for details.")
 
     return 0
 
