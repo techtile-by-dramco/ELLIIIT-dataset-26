@@ -40,7 +40,7 @@ DEFAULT_RESULTS_DIR = REPO_ROOT / "results"
 DEFAULT_OUTPUT_FILE = DEFAULT_RESULTS_DIR / "csi.nc"
 DEFAULT_DATA_ROOT = Path(r"\\10.128.48.9\elliit") if os.name == "nt" else None
 DEFAULT_WORKERS = min(16, max(4, os.cpu_count() or 1))
-EXPERIMENTS = ["EXP003", "EXP005", "EXP006", "EXP007", "EXP008"]  # Set to [] or None to include all experiments by default.
+EXPERIMENTS = ["EXP003", "EXP005", "EXP006", "EXP007", "EXP008", "EXP009"]  # Set to [] or None to include all experiments by default.
 RESULT_FILE_SUFFIXES = {".json", ".jsonl", ".txt", ".log"}
 FLOAT_PATTERN = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
 INTEGER_PATTERN = r"[-+]?\d+"

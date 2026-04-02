@@ -1,0 +1,107 @@
+---
+title: Techtile Background
+description: What the Techtile testbed is, how it is structured, and why its architecture matters for this dataset.
+status: stable
+component: dataset
+---
+
+Techtile is the room-scale measurement infrastructure in which the RF and acoustic data in this repository are collected.
+
+At a high level, Techtile is designed as a modular 6G R&D testbed for:
+
+- distributed communication
+- positioning
+- sensing
+- multi-technology experiments across RF, acoustics, and visible light
+
+The idea is to move the infrastructure into the room itself. Instead of placing all radios and sensors in one rack or one compact array, Techtile distributes resources over the walls, ceiling, and floor so experiments can study dense, spatially dispersed access points and sensing nodes.
+
+## Why Techtile Matters For This Dataset
+
+The processed RF xarray in this repository only makes sense if you keep the measurement environment in mind.
+
+For this dataset, Techtile contributes:
+
+- a distributed set of RF tiles rather than one compact antenna array
+- synchronized infrastructure so phase-sensitive experiments are repeatable
+- a fixed room geometry that makes cycle-to-position mapping meaningful
+- Qualisys ground truth so rover positions can be attached to each measurement cycle
+
+That is why one `experiment_id` and `cycle_id` pair can be interpreted as one physical rover stop inside a structured, instrumented room.
+
+## Physical Structure
+
+According to the official Techtile project pages, the testbed is built as a `4 m x 8 m` room-scale fabric with `140` detachable tiles.
+
+Those tiles are distributed across the room surfaces as:
+
+- `28` tiles per wall
+- `42` ceiling tiles
+- `52` floor tiles
+
+Each tile has a nominal size of `120 cm x 60 cm`, with a `5 cm` mounting grid. This matters because the hardware is not placed arbitrarily: the infrastructure is intentionally modular, repeatable, and reconfigurable.
+
+For the RF experiments in this repository, the active aperture is typically a selected subset of those tiles, often the ceiling group.
+
+## Tile And Backbone Architecture
+
+One of the central Techtile design choices is: everything over Ethernet.
+
+The official Techtile description and primer describe each tile as an addressable resource unit. In the default setup, a tile can host:
+
+- an edge processing device
+- an SDR front-end
+- a power subsystem
+
+The backbone distributes three things over Ethernet:
+
+- data connectivity
+- Power-over-Ethernet power
+- time synchronization
+
+Key infrastructure properties described by the Techtile sources are:
+
+- up to `90 W` PoE++ power per tile
+- IEEE `1588` PTP time synchronization
+- `192` Ethernet connections across the room fabric
+- a central server with dual GPUs and `512 GB` RAM
+
+This is important for the dataset because it explains why the measurements are both distributed and synchronized. The RF system is not just many antennas; it is many networked, clocked, powered resource units.
+
+## Synchronization And Ground Truth
+
+For RF reciprocity and phase-sensitive work, synchronization quality is critical. The Techtile documentation highlights PTP-based synchronization as a core feature of the infrastructure, and the Techtile publications discuss this as one of the main practical challenges in distributed arrays.
+
+The official Techtile site also describes the testbed as using `six Qualisys cameras` for ground truth. In this repository, those position samples are what eventually become `rover_x`, `rover_y`, and `rover_z` in the processed xarray after extraction and filtering.
+
+So in practice:
+
+- Techtile provides the distributed RF infrastructure
+- Qualisys provides the rover position labels
+- the extractor joins both into one xarray dataset
+
+## Relation To RadioWeaves-Style Research
+
+The Techtile papers position the testbed as an infrastructure for evaluating RadioWeaves-style ideas: dense, distributed resources embedded into the environment and used for more than communication alone.
+
+That is why the Techtile scope goes beyond classic wireless links. The official project description explicitly frames the testbed around combinations of:
+
+- communication
+- sensing
+- positioning
+- wireless power transfer
+- edge intelligence
+
+This repository only exposes part of that larger system, but the design logic is the same: the room itself acts as the carrier of distributed, synchronized resources.
+
+## Further Reading
+
+Official Techtile pages:
+
+- [Techtile home page](https://dramco.be/projects/techtile/)
+- [Techtile publications](https://dramco.be/projects/techtile/publications/)
+
+Foundational Techtile references highlighted on the official publications page:
+
+- [A Primer on Techtile: An R&D Testbed for Distributed Communication, Sensing and Positioning](https://arxiv.org/abs/2105.06740)
+- [Techtile – Open 6G R&D Testbed for Communication, Positioning, Sensing, WPT and Federated Learning](https://arxiv.org/abs/2202.04524)

@@ -40,6 +40,7 @@ export default defineConfig({
         {
           label: "Reference",
           items: [
+            { label: "Techtile Background", slug: "reference/techtile-background" },
             { label: "Measurement Setup", slug: "reference/measurement-setup" },
             { label: "Measurement Sequence", slug: "reference/measurement-sequence" },
             { label: "Data Products", slug: "reference/data-products" },
