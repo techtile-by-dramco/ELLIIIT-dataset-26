@@ -61,11 +61,15 @@ amplitude = np.abs(csi)
 Important interpretation details:
 
 - `cycle_id` is a shared sparse axis across experiments
+- the xarray indexes are the named coordinates `experiment_id`, `cycle_id`, and `hostname`
+- selecting one `experiment_id` leaves a `cycle_id x hostname` slice
+- selecting one `(experiment_id, cycle_id)` pair leaves one rover pose plus one CSI vector over hostnames
 - `csi_available` is the authoritative mask for whether a host/cycle entry exists
 - rover coordinates can still be `NaN`, so always check `position_available` and finite coordinates before using a pose
 - some original rover stops may be absent because duplicate consecutive positions are filtered before the dataset is written
 
 Once you have a `.nc` file, continue with:
 
+- [Notebook: RF Xarray Structure](notebook-xarray-structure/)
 - [Notebook: RF Dataset Overview](notebook-overview/)
 - [Notebook: Rover Positions](notebook-rover-positions/)

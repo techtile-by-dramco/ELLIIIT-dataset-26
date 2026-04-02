@@ -9,6 +9,7 @@ from nbconvert import HTMLExporter
 
 NOTEBOOKS = [
     "plot_csi_positions.ipynb",
+    "tutorial_xarray_structure.ipynb",
     "tutorial_rover_positions.ipynb",
     "tutorial_csi_per_position.ipynb",
 ]

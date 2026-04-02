@@ -25,12 +25,88 @@ In the processed NetCDF:
 - `csi_real + 1j * csi_imag` reconstructs the cable-corrected complex RF quantity
 - `csi_available == 1` means a given host contributed a usable RF record for that experiment/cycle
 
+## The Three Named Axes
+
+| Axis | Meaning | Typical question |
+| --- | --- | --- |
+| `experiment_id` | One logical run such as `EXP003` or `EXP005`. | Which measurement campaign am I looking at? |
+| `cycle_id` | One orchestrator loop iteration. This is the physical rover stop axis. | Which stop in the run am I selecting? |
+| `hostname` | One RF receiver host or tile. | Which antenna/tile produced this CSI value? |
+
+This means the processed xarray is easiest to picture as:
+
+- one outer stack of experiments
+- inside each experiment, one matrix over `cycle_id x hostname`
+- rover coordinates attached to each cycle
+- CSI values attached to each `(cycle_id, hostname)` pair
+
+In other words:
+
+- rover variables live on `(experiment_id, cycle_id)`
+- CSI variables live on `(experiment_id, cycle_id, hostname)`
+
+## Coordinates, Indexes, and Why They Matter
+
+The named coordinates are also the xarray indexes:
+
+| Coordinate | What it stores | Why it matters |
+| --- | --- | --- |
+| `experiment_id` | labels like `EXP003` | use `.sel(experiment_id=\"EXP003\")` instead of integer positions |
+| `cycle_id` | orchestrator cycle labels | lets you map CSI and rover pose back to the same physical stop |
+| `hostname` | receiver host labels such as `A05` | lets you select or mask CSI by tile name |
+
+Inspect them directly with:
+
+```python
+ds.sizes
+ds.coords
+ds.indexes
+```
+
+## The Most Important Structural Detail
+
+`cycle_id` is a shared axis across the full dataset. That is convenient, but it is also the easiest place to make mistakes.
+
+The important part is:
+
+- the dataset may list many `cycle_id` values
+- not every experiment uses every listed cycle
+- not every hostname is populated in every cycle
+
+So a coordinate existing in the dataset does **not** guarantee that the data at that coordinate is valid. Always treat the masks as authoritative:
+
+- `csi_available` tells you whether CSI exists for one `(experiment_id, cycle_id, hostname)` location
+- `position_available` plus finite `rover_x/y/z` tells you whether the rover pose is usable for one `(experiment_id, cycle_id)` location
+
+## Make One Measurement Point Tangible
+
+One physical RF measurement point is the pair `(experiment_id, cycle_id)`.
+
+That pair gives you:
+
+- one rover position: `rover_x`, `rover_y`, `rover_z`
+- one availability flag: `position_available`
+- one CSI vector across the active hostnames: `csi_real`, `csi_imag`, `csi_available`
+
+Selecting one experiment, then one cycle, then one host shrinks the dataset like this:
+
+| Selection | Remaining structure |
+| --- | --- |
+| `ds` | full `(experiment_id, cycle_id, hostname)` dataset |
+| `ds.sel(experiment_id=\"EXP003\")` | one `cycle_id x hostname` slice |
+| `ds.sel(experiment_id=\"EXP003\", cycle_id=123)` | one rover pose plus one CSI vector over `hostname` |
+| `...sel(hostname=\"A05\")` | one scalar CSI value for one tile |
+
 Important structural details:
 
 - `cycle_id` is a shared axis across the dataset, not a guarantee that every experiment has data for every listed cycle
 - always use `csi_available` to discover which cycles and hostnames are populated
 - always check `position_available` and finite rover coordinates before trusting a rover pose
 - duplicate rover positions may already have been filtered out before the `.nc` file was written
+
+For a worked walkthrough, open:
+
+- [Notebook: RF Xarray Structure](../../tutorials/notebook-xarray-structure/)
 
 Safe starting pattern:
 

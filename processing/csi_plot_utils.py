@@ -27,6 +27,26 @@ POWER_DB_FLOOR = -120.0
 ANTENNA_TILE_SIZE_M = 0.14
 DATASET_TIMESTAMP_PATTERN = re.compile(r".*_(?P<timestamp>\d{8}_\d{6})(?:_\d{2})?\.nc$")
 
+DIMENSION_DESCRIPTIONS = {
+    "experiment_id": "One logical measurement run such as EXP003 or EXP005.",
+    "cycle_id": "Shared orchestrator cycle axis across the dataset. Not every experiment uses every listed cycle.",
+    "hostname": "One RF receiver host or tile.",
+    "measurement_index": "A flat helper axis used only in tutorial tables after valid rows are merged.",
+}
+
+VARIABLE_DESCRIPTIONS = {
+    "rover_x": "Rover X coordinate in meters for one experiment/cycle pair.",
+    "rover_y": "Rover Y coordinate in meters for one experiment/cycle pair.",
+    "rover_z": "Rover Z coordinate in meters for one experiment/cycle pair.",
+    "position_available": "Boolean-like mask that marks whether the rover position is valid for that cycle.",
+    "csi_real": "Real part of the cable-corrected complex CSI value.",
+    "csi_imag": "Imaginary part of the cable-corrected complex CSI value.",
+    "csi_available": "Boolean-like mask that marks whether a host contributed CSI for that experiment/cycle.",
+    "csi_host_count": "Number of hosts with CSI in a selected cycle.",
+    "experiment_id": "Experiment label carried into flattened tutorial tables.",
+    "cycle_id": "Cycle label carried into flattened tutorial tables.",
+}
+
 plt.style.use("seaborn-v0_8-whitegrid")
 
 
@@ -241,6 +261,26 @@ def tick_positions(values: Sequence[object], max_ticks: int = 20) -> np.ndarray:
     return np.linspace(0, values.size - 1, max_ticks, dtype=int)
 
 
+def preview_coord_values(values: Sequence[object], max_items: int = 6) -> str:
+    values = np.asarray(values)
+    if values.size == 0:
+        return "(empty)"
+    preview = ", ".join(str(value) for value in values[:max_items])
+    if values.size <= max_items:
+        return preview
+    return f"{preview}, ... ({values.size} total)"
+
+
+def markdown_table(headers: Sequence[str], rows: Sequence[Sequence[object]]) -> str:
+    header_row = "| " + " | ".join(headers) + " |"
+    separator_row = "| " + " | ".join("---" for _ in headers) + " |"
+    body_rows = [
+        "| " + " | ".join(str(value) for value in row) + " |"
+        for row in rows
+    ]
+    return "\n".join([header_row, separator_row, *body_rows])
+
+
 def available_experiment_ids(ds: xr.Dataset) -> list[str]:
     return ds["experiment_id"].values.astype(str).tolist()
 
@@ -290,6 +330,106 @@ def dataset_overview(ds: xr.Dataset) -> dict[str, object]:
         "last_measurement_timestamp": last_measurement_timestamp,
         "last_measurement_timestamp_source": ds.attrs.get("last_measurement_timestamp_source"),
     }
+
+
+def xarray_structure_markdown(ds: xr.Dataset, max_coord_preview: int = 6) -> str:
+    dimension_rows = [
+        (
+            dimension,
+            int(size),
+            DIMENSION_DESCRIPTIONS.get(dimension, "No description recorded."),
+        )
+        for dimension, size in ds.sizes.items()
+    ]
+    coordinate_rows = [
+        (
+            coordinate_name,
+            type(ds.indexes[coordinate_name]).__name__ if coordinate_name in ds.indexes else "(none)",
+            preview_coord_values(ds[coordinate_name].values, max_items=max_coord_preview),
+        )
+        for coordinate_name in ds.coords
+    ]
+    variable_rows = [
+        (
+            variable_name,
+            ", ".join(ds[variable_name].dims),
+            tuple(int(length) for length in ds[variable_name].shape),
+            VARIABLE_DESCRIPTIONS.get(variable_name, "No description recorded."),
+        )
+        for variable_name in ds.data_vars
+    ]
+
+    sections = [
+        "## Dataset Axes",
+        markdown_table(
+            ["Dimension", "Size", "Meaning"],
+            dimension_rows,
+        ),
+        "",
+        "## Coordinate Indexes",
+        markdown_table(
+            ["Coordinate", "Index type", "Preview"],
+            coordinate_rows,
+        ),
+        "",
+        "## Data Variables",
+        markdown_table(
+            ["Variable", "Dims", "Shape", "Meaning"],
+            variable_rows,
+        ),
+        "",
+        "Think of the dataset as one stack of experiment slices.",
+        "",
+        "- A full dataset uses `(experiment_id, cycle_id, hostname)` as its named axes.",
+        "- Selecting one `experiment_id` removes the outer axis and leaves a `cycle_id x hostname` slice.",
+        "- Rover variables live on the `cycle_id` axis only, because one rover pose belongs to one cycle.",
+        "- CSI variables live on `cycle_id x hostname`, because one cycle can contain many host measurements.",
+    ]
+    return "\n".join(sections)
+
+
+def selection_walkthrough_markdown(
+    ds: xr.Dataset,
+    experiment_id: str,
+    cycle_id: int,
+    hostname: str,
+) -> str:
+    full_dataset_sizes = ", ".join(f"{name}={size}" for name, size in ds.sizes.items())
+    experiment_slice = ds.sel(experiment_id=experiment_id)
+    cycle_slice = experiment_slice.sel(cycle_id=int(cycle_id))
+    host_slice = cycle_slice.sel(hostname=str(hostname))
+
+    rows = [
+        (
+            "`ds`",
+            full_dataset_sizes,
+            "The complete dataset.",
+        ),
+        (
+            f"`ds.sel(experiment_id=\"{experiment_id}\")`",
+            ", ".join(f"{name}={size}" for name, size in experiment_slice.sizes.items()),
+            "One experiment slice. Rover variables are vectors over `cycle_id`; CSI variables are a `cycle_id x hostname` matrix.",
+        ),
+        (
+            f"`ds.sel(experiment_id=\"{experiment_id}\", cycle_id={int(cycle_id)})`",
+            ", ".join(f"{name}={size}" for name, size in cycle_slice.sizes.items()) or "(scalar)",
+            "One physical rover stop. Rover variables become scalars, CSI becomes a vector over hostnames.",
+        ),
+        (
+            f"`...sel(hostname=\"{hostname}\")`",
+            ", ".join(f"{name}={size}" for name, size in host_slice.sizes.items()) or "(scalar)",
+            "One host in one cycle. CSI variables become scalars.",
+        ),
+    ]
+
+    sections = [
+        "## Selection Walkthrough",
+        markdown_table(["Selection", "Remaining dims", "Meaning"], rows),
+        "",
+        "Use `.sel(...)` for named coordinates such as `experiment_id`, `cycle_id`, and `hostname`.",
+        "Use `.isel(...)` only when you intentionally want integer positions instead of coordinate labels.",
+    ]
+    return "\n".join(sections)
 
 
 def experiment_overview(
@@ -347,6 +487,39 @@ def print_experiment_overview(
             f" first_csi_cycle={row['first_csi_cycle']},"
             f" last_csi_cycle={row['last_csi_cycle']}"
         )
+
+
+def experiment_cycle_table(
+    ds: xr.Dataset,
+    experiment_id: str,
+    max_rows: int | None = 12,
+    only_cycles_with_csi: bool = True,
+) -> xr.Dataset:
+    experiment = ds.sel(experiment_id=experiment_id)
+    csi_host_count = experiment["csi_available"].sum(dim="hostname").astype(int)
+    position_valid = (
+        (experiment["position_available"] > 0)
+        & np.isfinite(experiment["rover_x"])
+        & np.isfinite(experiment["rover_y"])
+        & np.isfinite(experiment["rover_z"])
+    )
+    table = xr.Dataset(
+        data_vars={
+            "has_any_csi": csi_host_count > 0,
+            "csi_host_count": csi_host_count,
+            "position_valid": position_valid,
+            "rover_x": experiment["rover_x"],
+            "rover_y": experiment["rover_y"],
+            "rover_z": experiment["rover_z"],
+        },
+        coords={"cycle_id": experiment["cycle_id"]},
+        attrs={"experiment_id": str(experiment_id)},
+    )
+    if only_cycles_with_csi:
+        table = table.where(table["has_any_csi"], drop=True)
+    if max_rows is not None:
+        table = table.isel(cycle_id=slice(0, int(max_rows)))
+    return table
 
 
 def positions_for_experiment(ds: xr.Dataset, experiment_id: str) -> xr.Dataset:

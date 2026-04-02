@@ -31,6 +31,7 @@ export default defineConfig({
           items: [
             { label: "Getting Started", slug: "tutorials/getting-started" },
             { label: "Build the RF Xarray", slug: "tutorials/build-rf-xarray" },
+            { label: "Notebook: RF Xarray Structure", slug: "tutorials/notebook-xarray-structure" },
             { label: "Notebook: RF Dataset Overview", slug: "tutorials/notebook-overview" },
             { label: "Notebook: Rover Positions", slug: "tutorials/notebook-rover-positions" },
             { label: "Notebook: CSI Per Position", slug: "tutorials/notebook-csi-per-position" },
