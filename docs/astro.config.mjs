@@ -30,6 +30,7 @@ export default defineConfig({
           label: "Tutorials",
           items: [
             { label: "Getting Started", slug: "tutorials/getting-started" },
+            { label: "Post-Processing Workspace", slug: "tutorials/post-processing-workspace" },
             { label: "Use the RF Xarray", slug: "tutorials/build-rf-xarray" },
             { label: "Notebook: RF Xarray Structure", slug: "tutorials/notebook-xarray-structure" },
             { label: "Notebook: Acoustic Xarray Structure", slug: "tutorials/notebook-acoustic-xarray-structure" },

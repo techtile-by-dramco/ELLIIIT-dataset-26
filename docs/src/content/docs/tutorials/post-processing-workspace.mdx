@@ -1,0 +1,97 @@
+---
+title: Post-Processing Workspace
+description: Use the repository as a workspace for your own notebooks, scripts, figures, and derived dataset analysis.
+status: stable
+component: dataset
+---
+
+The repository includes a user workspace at `post-processing/`.
+
+Use that folder for your own analysis after the processed datasets are available in `results/`.
+
+Typical content in `post-processing/`:
+
+- exploratory notebooks built on top of the RF and acoustic datasets
+- custom scripts for feature extraction, filtering, or plotting
+- figures and tables for reports, papers, or presentations
+- experiment comparison notebooks and follow-up analysis
+
+The goal is to keep:
+
+- published or downloaded datasets in `results/`
+- shared parsing and tutorial code in `processing/`
+- your own follow-up work in `post-processing/`
+
+## Minimal Getting Started
+
+Clone the repository:
+
+```bash
+git clone https://github.com/techtile-by-dramco/ELLIIIT-dataset-26.git
+cd ELLIIIT-dataset-26
+```
+
+Create a Python environment and install basic notebook dependencies:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install jupyterlab matplotlib numpy requests xarray pyyaml h5netcdf
+```
+
+Download the published acoustic datasets into `results/`:
+
+```bash
+python processing/dataset-download/download_acoustic_datasets.py --list
+python processing/dataset-download/download_acoustic_datasets.py --experiment-id EXP003
+```
+
+Make sure the processed RF dataset is also present in `results/`, for example:
+
+```text
+results/csi_<experiment_id>.nc
+```
+
+Then start Jupyter:
+
+```bash
+jupyter lab
+```
+
+Useful tutorial notebooks to copy from or use as reference:
+
+- `processing/tutorials/tutorial_xarray_structure.ipynb`
+- `processing/tutorials/tutorial_acoustic_xarray_structure.ipynb`
+- `processing/tutorials/tutorial_rf_acoustic_position.ipynb`
+
+## Suggested Folder Usage
+
+Create your own files under `post-processing/`, for example:
+
+```text
+post-processing/my-analysis.ipynb
+post-processing/compare_experiments.py
+post-processing/figures/
+```
+
+Recommended workflow:
+
+- keep the shared tutorial notebooks unchanged unless you are improving the shared examples
+- keep personal or experiment-specific analysis in `post-processing/`
+- keep the processed `.nc` inputs in `results/`
+
+## Contributing Back
+
+If your post-processing scripts, notebooks, or figures are useful for other users of the dataset, create a branch and open a pull request against the main repository.
+
+That is the preferred path when:
+
+- the notebook or script is reusable
+- the figures improve the shared docs
+- the analysis clarifies the interpretation of the dataset
+- the work fixes a bug in an existing workflow
+
+Wait until the results are in good shape, then open the pull request so the work can be reviewed and merged.
+
+The repository copy of these instructions is also available in `post-processing/README.md`.
