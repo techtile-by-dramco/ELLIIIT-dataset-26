@@ -89,15 +89,53 @@ def export_notebooks() -> None:
     module.main()
 
 
+def optional_dependency_name(exc: BaseException) -> str | None:
+    if isinstance(exc, ModuleNotFoundError):
+        return exc.name or "unknown"
+    return None
+
+
+def optional_runtime_issue(exc: BaseException) -> bool:
+    if optional_dependency_name(exc) is not None:
+        return True
+    if isinstance(exc, FileNotFoundError):
+        return "ffmpeg" in str(exc).lower()
+    if isinstance(exc, RuntimeError):
+        return "ffmpeg" in str(exc).lower()
+    return False
+
+
+def log_optional_asset_skip(exc: BaseException, step: str) -> None:
+    dependency_name = optional_dependency_name(exc)
+    if dependency_name is not None:
+        print(
+            f"Skipping {step}: optional Python dependency missing ({dependency_name}). "
+            "Notebook HTML exports were still generated."
+        )
+        return
+    print(f"Skipping {step}: {exc}. Notebook HTML exports were still generated.")
+
+
 def export_notebook_figures_and_movies() -> None:
-    figures_module = load_script_module("export_notebook_figures.py")
-    movies_module = load_script_module("export_notebook_movies.py")
+    try:
+        figures_module = load_script_module("export_notebook_figures.py")
+        movies_module = load_script_module("export_notebook_movies.py")
+    except BaseException as exc:
+        if optional_runtime_issue(exc):
+            log_optional_asset_skip(exc, "notebook figure/movie export")
+            return
+        raise
 
     try:
         dataset_path = figures_module.find_latest_dataset()
     except FileNotFoundError as exc:
         print(f"Skipping notebook figure/movie export: {exc}")
         return
+    except BaseException as exc:
+        if optional_runtime_issue(exc):
+            log_optional_asset_skip(exc, "notebook figure/movie export")
+            return
+        raise
 
     print(f"Found RF dataset for dynamic docs assets: {dataset_path}")
 
@@ -112,10 +150,16 @@ def export_notebook_figures_and_movies() -> None:
         dataset_path,
     ] + [PROCESSING_TUTORIALS_DIR / notebook_name for notebook_name in figures_module.NOTEBOOK_FIGURES]
 
-    if assets_are_stale(figure_outputs, figure_sources):
-        figures_module.main()
-    else:
-        print("Notebook figures are already up to date.")
+    try:
+        if assets_are_stale(figure_outputs, figure_sources):
+            figures_module.main()
+        else:
+            print("Notebook figures are already up to date.")
+    except BaseException as exc:
+        if optional_runtime_issue(exc):
+            log_optional_asset_skip(exc, "notebook figure export")
+            return
+        raise
 
     movie_outputs = [
         movies_module.output_dir() / movies_module.PHASE_MOVIE_NAME,
@@ -128,10 +172,16 @@ def export_notebook_figures_and_movies() -> None:
         dataset_path,
     ]
 
-    if assets_are_stale(movie_outputs, movie_sources):
-        movies_module.main()
-    else:
-        print("Notebook movies are already up to date.")
+    try:
+        if assets_are_stale(movie_outputs, movie_sources):
+            movies_module.main()
+        else:
+            print("Notebook movies are already up to date.")
+    except BaseException as exc:
+        if optional_runtime_issue(exc):
+            log_optional_asset_skip(exc, "notebook movie export")
+            return
+        raise
 
 
 def main() -> None:

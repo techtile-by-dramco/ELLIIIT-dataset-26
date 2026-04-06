@@ -8,6 +8,7 @@ from pathlib import Path
 
 import nbformat
 import matplotlib
+from nbformat.validator import normalize
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -101,7 +102,9 @@ def notebook_runtime(destination_dir: Path, file_names: list[str]):
 
 
 def execute_notebook(source_path: Path, dataset_path: Path, destination_dir: Path, file_names: list[str]) -> int:
-    notebook = nbformat.read(source_path, as_version=4)
+    validation_error: dict[str, object] = {}
+    notebook = nbformat.read(source_path, as_version=4, capture_validation_error=validation_error)
+    normalize(notebook)
     namespace: dict[str, object] = {"__name__": "__main__"}
 
     with notebook_runtime(destination_dir, file_names) as saved_count:

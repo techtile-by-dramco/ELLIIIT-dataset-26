@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-import shutil
+import warnings
 
 import nbformat
 from nbconvert import HTMLExporter
+from nbformat.validator import normalize
 
 
 NOTEBOOKS = [
@@ -16,6 +17,13 @@ NOTEBOOKS = [
     "tutorial_rf_acoustic_position.ipynb",
     "tutorial_csi_movies.ipynb",
 ]
+
+warnings.filterwarnings(
+    "ignore",
+    message="IPython3 lexer unavailable, falling back on Python 3",
+    category=UserWarning,
+    module="nbconvert.filters.highlight",
+)
 
 
 def main() -> None:
@@ -38,7 +46,9 @@ def main() -> None:
         if not source_path.exists():
             raise FileNotFoundError(f"Notebook not found: {source_path}")
 
-        notebook = nbformat.read(source_path, as_version=4)
+        validation_error: dict[str, object] = {}
+        notebook = nbformat.read(source_path, as_version=4, capture_validation_error=validation_error)
+        normalize(notebook)
         html_body, _resources = exporter.from_notebook_node(
             notebook,
             resources={"metadata": {"name": source_path.stem}},
@@ -46,7 +56,7 @@ def main() -> None:
 
         html_path = output_dir / f"{source_path.stem}.html"
         html_path.write_text(html_body, encoding="utf-8")
-        shutil.copy2(source_path, output_dir / source_path.name)
+        nbformat.write(notebook, output_dir / source_path.name)
         print(f"Exported {source_path.name} -> {html_path.relative_to(docs_root)}")
 
 
