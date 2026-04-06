@@ -7,15 +7,22 @@ component: dataset
 
 import { publicUrl } from "../../utils/public-url";
 
-<img
-  src={publicUrl("images/holder.jpg")}
-  alt="ELLIIIT measurement rig"
-  style="width: 240px; border-radius: 1rem;"
-/>
+<div style="display: flex; flex-wrap: wrap; gap: 1rem; margin: 1.25rem 0 1.75rem;">
+  <img
+    src={publicUrl("images/techtile-room-overview.jpg")}
+    alt="Wide view of the Techtile measurement room used for the ELLIIIT dataset experiments."
+    style="flex: 1 1 320px; max-width: min(100%, 520px); border-radius: 1rem;"
+  />
+  <img
+    src={publicUrl("images/techtile-room-setup.jpg")}
+    alt="Techtile measurement setup with the rover frame and display wall used during ELLIIIT dataset acquisition."
+    style="flex: 1 1 320px; max-width: min(100%, 520px); border-radius: 1rem;"
+  />
+</div>
 
 This site is the user-facing documentation for the ELLIIIT dataset repository. It is organized in two tracks:
 
-- **Tutorials** for learning how to open, inspect, and interpret the processed RF xarray you already received as a `.nc` file.
+- **Tutorials** for learning how to open, inspect, and interpret the processed RF xarray and the matching per-experiment acoustic `.nc` files.
 - **Reference** for the acquisition pipeline, measurement semantics, file layout, and operator-facing workflows.
 
 Start here:
@@ -23,9 +30,11 @@ Start here:
 - [Getting Started](tutorials/getting-started/)
 - [Use the RF Xarray](tutorials/build-rf-xarray/)
 - [Notebook: RF Xarray Structure](tutorials/notebook-xarray-structure/)
+- [Notebook: Acoustic Xarray Structure](tutorials/notebook-acoustic-xarray-structure/)
 - [Notebook: RF Dataset Overview](tutorials/notebook-overview/)
 - [Notebook: Rover Positions](tutorials/notebook-rover-positions/)
 - [Notebook: CSI Per Position](tutorials/notebook-csi-per-position/)
+- [Notebook: RF And Acoustic At One Position](tutorials/notebook-rf-acoustic-position/)
 - [Notebook: CSI Movies](tutorials/notebook-csi-movies/)
 
-The notebook tutorials published here are generated from the source notebooks in `processing/` and embedded as read-only HTML exports. The runnable notebook files are also available for download from each tutorial page.
+The notebook tutorials published here are generated from the source notebooks in `processing/tutorials/` and embedded as read-only HTML exports. The runnable notebook files are also available for download from each tutorial page.

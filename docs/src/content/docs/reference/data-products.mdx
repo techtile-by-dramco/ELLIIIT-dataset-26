@@ -35,7 +35,23 @@ The repository writes several different outputs. The most important ones are:
 ## Processed RF xarray
 
 - location: `results/csi_<experiment_id>.nc`
-- written by: `processing/extract_csi_from_smb_v2.py`
+- written by: `processing/parsing/extract_csi_from_smb_v2.py`
 - combines rover positions and CSI into one xarray/NetCDF dataset
 
 For most readers of this docs site, this `.nc` file is the main entry point. The tutorial track assumes you already have this file and want to inspect or visualize its contents.
+
+## Processed acoustic xarray
+
+- location: `results/acoustic_<experiment_id>.nc`
+- written by: `processing/parsing/acoustic_parser.py`
+- one file per experiment
+- main coordinates: `experiment_id`, `cycle_id`, `microphone_label`
+- main data variable: `values` with shape `(experiment_id, cycle_id, microphone_label, sample_index)`
+
+This acoustic `.nc` is meant to be joined back to the RF dataset by the shared `(experiment_id, cycle_id)` pair. The RF file provides the rover pose; the acoustic file provides the microphone waveforms recorded at that same stop.
+
+Useful notebook entry points:
+
+- [Notebook: RF Xarray Structure](../../tutorials/notebook-xarray-structure/)
+- [Notebook: Acoustic Xarray Structure](../../tutorials/notebook-acoustic-xarray-structure/)
+- [Notebook: RF And Acoustic At One Position](../../tutorials/notebook-rf-acoustic-position/)

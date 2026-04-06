@@ -22,7 +22,7 @@ results/csi_<experiment_id>.nc
 If you are using the helper module from the notebooks:
 
 ```python
-from processing import csi_plot_utils as csi
+from processing.tutorials import csi_plot_utils as csi
 
 ds, dataset_path = csi.open_dataset(dataset_path="results/csi_EXP003.nc")
 print(dataset_path)
@@ -53,6 +53,14 @@ The processed NetCDF stores:
   - `csi_real`
   - `csi_imag`
   - `csi_available`
+
+If you also have the processed acoustic companion files, they are written separately per experiment as:
+
+```text
+results/acoustic_<experiment_id>.nc
+```
+
+Those acoustic files reuse the same `experiment_id` and `cycle_id` keys, so you select the rover pose from the RF dataset first and then index the matching acoustic waveform with the same pair.
 
 The quickest sanity checks are:
 
@@ -125,5 +133,7 @@ If you are one of the maintainers who needs to know how the `.nc` file was built
 Once you have a `.nc` file, continue with:
 
 - [Notebook: RF Xarray Structure](notebook-xarray-structure/)
+- [Notebook: Acoustic Xarray Structure](notebook-acoustic-xarray-structure/)
 - [Notebook: RF Dataset Overview](notebook-overview/)
 - [Notebook: Rover Positions](notebook-rover-positions/)
+- [Notebook: RF And Acoustic At One Position](notebook-rf-acoustic-position/)

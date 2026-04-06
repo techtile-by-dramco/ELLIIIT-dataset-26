@@ -1,0 +1,18 @@
+---
+title: "Notebook: RF And Acoustic At One Position"
+description: Embedded notebook for resolving one rover position from the RF dataset and plotting the matching acoustic waveform data.
+status: stable
+component: dataset
+---
+
+import NotebookEmbed from "../../../components/NotebookEmbed.astro";
+
+This notebook opens the processed RF NetCDF, resolves one physical measurement point to its `(experiment_id, cycle_id)` pair, then opens the matching per-experiment acoustic NetCDF file and plots the corresponding waveform data for that same cycle.
+
+The content below is rendered directly from the source notebook in `processing/tutorials/tutorial_rf_acoustic_position.ipynb`.
+
+<NotebookEmbed
+  title="RF And Acoustic At One Position Notebook"
+  htmlPath="notebooks/tutorial_rf_acoustic_position.html"
+  notebookPath="notebooks/tutorial_rf_acoustic_position.ipynb"
+/>

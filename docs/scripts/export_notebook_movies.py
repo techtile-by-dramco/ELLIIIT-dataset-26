@@ -13,7 +13,7 @@ def repo_root() -> Path:
 
 
 def processing_dir() -> Path:
-    return repo_root() / "processing"
+    return repo_root() / "processing" / "tutorials"
 
 
 def output_dir() -> Path:

@@ -16,7 +16,7 @@ If you already received a processed `.nc` file and only want to analyze the data
 
 The active RF post-processing path is:
 
-- `processing/extract_csi_from_smb_v2.py`
+- `processing/parsing/extract_csi_from_smb_v2.py`
 
 It performs:
 
@@ -31,9 +31,9 @@ It performs:
 Useful commands:
 
 ```bash
-python processing/extract_csi_from_smb_v2.py
-python processing/extract_csi_from_smb_v2.py --max-measurements 10
-python processing/extract_csi_from_smb_v2.py --output results/csi_custom.nc
+python processing/parsing/extract_csi_from_smb_v2.py
+python processing/parsing/extract_csi_from_smb_v2.py --max-measurements 10
+python processing/parsing/extract_csi_from_smb_v2.py --output results/csi_custom.nc
 python docs/scripts/export_notebook_movies.py
 ```
 
@@ -47,9 +47,11 @@ The resulting dataset contains:
 The recommended analysis workflow is now published as notebook-backed docs pages:
 
 - [Notebook: RF Xarray Structure](../../tutorials/notebook-xarray-structure/)
+- [Notebook: Acoustic Xarray Structure](../../tutorials/notebook-acoustic-xarray-structure/)
 - [Notebook: RF Dataset Overview](../../tutorials/notebook-overview/)
 - [Notebook: Rover Positions](../../tutorials/notebook-rover-positions/)
 - [Notebook: CSI Per Position](../../tutorials/notebook-csi-per-position/)
+- [Notebook: RF And Acoustic At One Position](../../tutorials/notebook-rf-acoustic-position/)
 - [Notebook: CSI Movies](../../tutorials/notebook-csi-movies/)
 
 Example videos generated from the merged-dataset movie tutorial:

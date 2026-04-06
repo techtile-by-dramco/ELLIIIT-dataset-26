@@ -25,6 +25,12 @@ In the processed NetCDF:
 - `csi_real + 1j * csi_imag` reconstructs the cable-corrected complex RF quantity
 - `csi_available == 1` means a given host contributed a usable RF record for that experiment/cycle
 
+In the processed acoustic NetCDF:
+
+- `values` stores the microphone waveforms on `(experiment_id, cycle_id, microphone_label, sample_index)`
+- the same `(experiment_id, cycle_id)` pair identifies the acoustic capture recorded at that rover pose
+- `microphone_label` selects the microphone channel inside that one capture
+
 ## The Three Named Axes
 
 | Axis | Meaning | Typical question |
@@ -107,6 +113,8 @@ Important structural details:
 For a worked walkthrough, open:
 
 - [Notebook: RF Xarray Structure](../../tutorials/notebook-xarray-structure/)
+- [Notebook: Acoustic Xarray Structure](../../tutorials/notebook-acoustic-xarray-structure/)
+- [Notebook: RF And Acoustic At One Position](../../tutorials/notebook-rf-acoustic-position/)
 
 Safe starting pattern:
 

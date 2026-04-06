@@ -10,8 +10,10 @@ from nbconvert import HTMLExporter
 NOTEBOOKS = [
     "plot_csi_positions.ipynb",
     "tutorial_xarray_structure.ipynb",
+    "tutorial_acoustic_xarray_structure.ipynb",
     "tutorial_rover_positions.ipynb",
     "tutorial_csi_per_position.ipynb",
+    "tutorial_rf_acoustic_position.ipynb",
     "tutorial_csi_movies.ipynb",
 ]
 
@@ -19,7 +21,7 @@ NOTEBOOKS = [
 def main() -> None:
     docs_root = Path(__file__).resolve().parent.parent
     repo_root = docs_root.parent
-    processing_dir = repo_root / "processing"
+    processing_dir = repo_root / "processing" / "tutorials"
     output_dir = docs_root / "public" / "notebooks"
     output_dir.mkdir(parents=True, exist_ok=True)
 

@@ -27,9 +27,9 @@ This writes a PNG preview next to the rover config by default.
 To summarize RF runtime failures:
 
 ```bash
-python processing/summarize_error_logs_from_smb.py
-python processing/summarize_error_logs_from_smb.py --host wallEast --tail 20
-python processing/summarize_error_logs_from_smb.py --error-type CLOCK_LOCK_FAILED --json-output results/error_summary.json
+python processing/parsing/summarize_error_logs_from_smb.py
+python processing/parsing/summarize_error_logs_from_smb.py --host wallEast --tail 20
+python processing/parsing/summarize_error_logs_from_smb.py --error-type CLOCK_LOCK_FAILED --json-output results/error_summary.json
 ```
 
 ## Visual quick checks

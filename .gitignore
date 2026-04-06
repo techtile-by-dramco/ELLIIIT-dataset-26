@@ -61,6 +61,7 @@ docs/public/notebooks/*.ipynb
 !docs/public/notebooks/.gitkeep
 
 # Local generated processing results
+results/acoustic_*.nc
 !results/.gitkeep
 
 # Local environment files

@@ -1,0 +1,18 @@
+---
+title: "Notebook: Acoustic Xarray Structure"
+description: Embedded notebook for understanding the acoustic xarray dimensions, coordinates, waveform axis, and selection patterns.
+status: stable
+component: dataset
+---
+
+import NotebookEmbed from "../../../components/NotebookEmbed.astro";
+
+This notebook is the structure walkthrough for the processed acoustic dataset. It explains how the acoustic NetCDF is organized around `experiment_id`, `cycle_id`, and `microphone_label`, and how the waveform samples live on the extra `sample_index` dimension inside `values`.
+
+The content below is rendered directly from the source notebook in `processing/tutorials/tutorial_acoustic_xarray_structure.ipynb`.
+
+<NotebookEmbed
+  title="Acoustic Xarray Structure Notebook"
+  htmlPath="notebooks/tutorial_acoustic_xarray_structure.html"
+  notebookPath="notebooks/tutorial_acoustic_xarray_structure.ipynb"
+/>

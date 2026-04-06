@@ -30,14 +30,24 @@ The most important identifiers are:
 For most readers of this docs site, the starting point is simple:
 
 1. obtain the processed RF `.nc` file
-2. open the tutorial notebooks
-3. use the xarray masks to identify valid rover positions and available CSI
+2. optionally download the matching per-experiment acoustic `.nc` files into `results/`
+3. open the tutorial notebooks
+4. use the xarray masks to identify valid rover positions, available CSI, and the matching acoustic cycle
 
 You do **not** need access to the NAS, the raw RF logs, or the extractor pipeline to follow the tutorial track.
+
+To inspect the public server listing and download a specific acoustic dataset:
+
+```bash
+python processing/dataset-download/download_acoustic_datasets.py --list
+python processing/dataset-download/download_acoustic_datasets.py --experiment-id EXP003
+```
 
 Continue with:
 
 - [Use the RF Xarray](build-rf-xarray/)
 - [Notebook: RF Xarray Structure](notebook-xarray-structure/)
+- [Notebook: Acoustic Xarray Structure](notebook-acoustic-xarray-structure/)
 - [Notebook: RF Dataset Overview](notebook-overview/)
+- [Notebook: RF And Acoustic At One Position](notebook-rf-acoustic-position/)
 - [Notebook: CSI Movies](notebook-csi-movies/)

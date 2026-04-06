@@ -37,7 +37,7 @@ def repo_root() -> Path:
 
 
 def processing_dir() -> Path:
-    return repo_root() / "processing"
+    return repo_root() / "processing" / "tutorials"
 
 
 def output_dir() -> Path:
@@ -50,7 +50,7 @@ def find_latest_dataset() -> Path:
 
     dataset_paths = csi.find_dataset_paths()
     if not dataset_paths:
-        raise FileNotFoundError("Could not find a dataset matching csi*.nc in results/ or processing/.")
+        raise FileNotFoundError("Could not find a dataset matching csi*.nc in results/, the working directory, or processing/tutorials/.")
     return dataset_paths[0]
 
 
