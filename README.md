@@ -57,3 +57,4 @@ Key code paths remain in:
 - `processing/dataset-download/` for published dataset download helpers
 - `processing/parsing/` for RF and acoustic extraction/parsing scripts
 - `processing/tutorials/` for xarray utilities and runnable notebook analysis
+- `post-processing/` for user notebooks, scripts, figures, and follow-up analysis built on the dataset
