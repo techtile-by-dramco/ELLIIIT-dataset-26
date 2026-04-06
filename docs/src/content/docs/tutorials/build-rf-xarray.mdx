@@ -1,6 +1,6 @@
 ---
 title: Use the RF Xarray
-description: Start from an existing `.nc` file, understand what is inside it, and use it safely in xarray.
+description: Start from the processed RF and acoustic `.nc` files, understand what each one contains, and use them safely in xarray.
 status: stable
 component: rf
 ---
@@ -8,16 +8,36 @@ component: rf
 Most readers of this documentation should start here:
 
 - you already have a processed RF `.nc` file
-- you want to inspect rover positions and CSI
-- you do **not** need the NAS or the raw RF result files
+- you may also have the processed acoustic companion `.nc` file
+- you want to inspect rover positions, CSI, and acoustic chirps
+- you do **not** need the NAS, the raw RF result files, or the raw acoustic recordings
 
-The tutorial track assumes that the difficult part is already done: the dataset has already been extracted and filtered into one NetCDF/xarray file such as:
+The tutorial track assumes that the difficult part is already done: the datasets have already been extracted and filtered into NetCDF/xarray files such as:
 
 ```text
 results/csi_<experiment_id>.nc
+results/acoustic_<experiment_id>.nc
 ```
 
-## Open The `.nc` File
+## The Two Processed Datasets
+
+There are two companion processed datasets:
+
+- `results/csi_<experiment_id>.nc` is the RF dataset
+- `results/acoustic_<experiment_id>.nc` is the acoustic dataset
+
+They share the same measurement keys, `experiment_id` and `cycle_id`, so they can be joined back to the same physical rover stop.
+
+The RF dataset contains the complex wireless channel between the transmitter on the rover and the active ceiling receiver entries selected by `hostname`.
+
+The acoustic dataset contains the raw sampled received chirp recorded at the microphones after the chirp was sent by the omnidirectional speaker.
+
+So the split is:
+
+- RF `.nc`: complex channel information plus the joined rover pose
+- acoustic `.nc`: raw sampled chirp waveforms for the same measurement points
+
+## Open The RF `.nc` File
 
 If you are using the helper module from the notebooks:
 
@@ -36,9 +56,19 @@ import xarray as xr
 ds = xr.open_dataset("results/csi_EXP003.nc")
 ```
 
-## What The File Contains
+## Open The Acoustic `.nc` File
 
-The processed NetCDF stores:
+The acoustic companion file is opened directly with xarray:
+
+```python
+import xarray as xr
+
+acoustic_ds = xr.open_dataset("results/acoustic_EXP003.nc")
+```
+
+## What The RF File Contains
+
+The processed RF NetCDF stores:
 
 - coordinates:
   - `experiment_id`
@@ -54,13 +84,11 @@ The processed NetCDF stores:
   - `csi_imag`
   - `csi_available`
 
-If you also have the processed acoustic companion files, they are written separately per experiment as:
+This is the main physical meaning of the RF file:
 
-```text
-results/acoustic_<experiment_id>.nc
-```
-
-Those acoustic files reuse the same `experiment_id` and `cycle_id` keys, so you select the rover pose from the RF dataset first and then index the matching acoustic waveform with the same pair.
+- one `(experiment_id, cycle_id)` pair identifies one rover stop
+- the same pair gives one complex RF response across the active ceiling receiver entries
+- `csi_real + 1j * csi_imag` reconstructs the complex channel quantity for those receiver entries
 
 The quickest sanity checks are:
 
@@ -69,6 +97,34 @@ ds.sizes
 ds.coords
 ds.data_vars
 ds.attrs
+```
+
+## What The Acoustic File Contains
+
+The processed acoustic NetCDF stores:
+
+- coordinates:
+  - `experiment_id`
+  - `cycle_id`
+  - `microphone_label`
+  - `sample_index`
+- acoustic data variable with shape `(experiment_id, cycle_id, microphone_label, sample_index)`:
+  - `values`
+
+This is the main physical meaning of the acoustic file:
+
+- one `(experiment_id, cycle_id)` pair identifies one rover stop
+- `values` contains the raw sampled received chirp at that stop
+- `microphone_label` selects which microphone channel recorded that chirp
+- the chirp was emitted by the omnidirectional speaker and captured without collapsing it into a single RF-style channel coefficient
+
+Useful first checks are:
+
+```python
+acoustic_ds.sizes
+acoustic_ds.coords
+acoustic_ds.data_vars
+acoustic_ds.attrs
 ```
 
 ## Reconstruct The Complex RF Quantity
@@ -80,6 +136,20 @@ csi = ds["csi_real"] + 1j * ds["csi_imag"]
 phase = np.angle(csi)
 amplitude = np.abs(csi)
 ```
+
+## How The Two Files Relate
+
+The RF and acoustic files are not duplicates of each other.
+
+- the RF file tells you the complex channel from the transmitter to the ceiling receivers
+- the acoustic file tells you the raw received chirp waveforms from the omnidirectional speaker
+- the shared keys `experiment_id` and `cycle_id` let you align both with the same rover position
+
+Typical workflow:
+
+- select the rover stop from the RF dataset
+- use the same `(experiment_id, cycle_id)` in the acoustic dataset
+- compare RF channel behavior and acoustic waveforms for that one physical location
 
 ## How To Think About The Structure
 
@@ -124,7 +194,7 @@ position_ok = (
 
 Most users can stop here and move on to the notebooks.
 
-If you are one of the maintainers who needs to know how the `.nc` file was built from raw RF logs and rover positions, see:
+If you are one of the maintainers who needs to know how these `.nc` files were built from raw RF logs, rover positions, and acoustic captures, see:
 
 - [RF Post-Processing](../reference/rf-post-processing/)
 - [Data Products](../reference/data-products/)

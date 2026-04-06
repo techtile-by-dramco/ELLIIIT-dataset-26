@@ -37,6 +37,7 @@ The repository writes several different outputs. The most important ones are:
 - location: `results/csi_<experiment_id>.nc`
 - written by: `processing/parsing/extract_csi_from_smb_v2.py`
 - combines rover positions and CSI into one xarray/NetCDF dataset
+- stores the complex RF channel between the rover transmitter and the active ceiling receiver entries selected by `hostname`
 
 For most readers of this docs site, this `.nc` file is the main entry point. The tutorial track assumes you already have this file and want to inspect or visualize its contents.
 
@@ -47,6 +48,7 @@ For most readers of this docs site, this `.nc` file is the main entry point. The
 - one file per experiment
 - main coordinates: `experiment_id`, `cycle_id`, `microphone_label`
 - main data variable: `values` with shape `(experiment_id, cycle_id, microphone_label, sample_index)`
+- stores the raw sampled received chirp recorded at the microphones after the chirp was emitted by the omnidirectional speaker
 
 This acoustic `.nc` is meant to be joined back to the RF dataset by the shared `(experiment_id, cycle_id)` pair. The RF file provides the rover pose; the acoustic file provides the microphone waveforms recorded at that same stop.
 

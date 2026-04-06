@@ -3,7 +3,7 @@
   "type": "module",
   "version": "0.0.1",
   "scripts": {
-    "build:content": "python scripts/export_notebooks.py",
+    "build:content": "python scripts/build_content.py",
     "dev": "npm run build:content && astro dev",
     "start": "npm run build:content && astro dev",
     "build": "npm run build:content && astro build",
