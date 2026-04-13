@@ -223,6 +223,8 @@ def download_dataset(
 
     try:
         with urlopen(request, timeout=timeout_seconds) as response, temp_destination.open("wb") as handle:
+            expected_bytes_header = response.headers.get("Content-Length")
+            expected_bytes = int(expected_bytes_header) if expected_bytes_header else None
             total_written = 0
             while True:
                 chunk = response.read(CHUNK_SIZE_BYTES)
@@ -230,6 +232,10 @@ def download_dataset(
                     break
                 handle.write(chunk)
                 total_written += len(chunk)
+            if expected_bytes is not None and total_written != expected_bytes:
+                raise IOError(
+                    f"Download of {dataset_name} was truncated: expected {expected_bytes} bytes, got {total_written}."
+                )
     except Exception:
         with contextlib.suppress(FileNotFoundError):
             temp_destination.unlink()
