@@ -1,0 +1,18 @@
+\section{Discussion and Interpretation Caveats}
+\label{sec:discussion}
+
+The main strength of \dataset{} is not only that it contains multi-modal measurements, but that it makes the boundary between ``logged campaign'' and ``presently analysis-ready subset'' explicit. That distinction matters. A careless reader could look at the 12 experiment names and assume that every experiment is equally populated across all modalities, or that the \gls{rf} NetCDF reflects every logged rover stop. Neither assumption is correct.
+
+The first caveat is that the current merged \gls{rf} NetCDF contains 9 experiments, whereas the campaign logs cover 12. The completeness report therefore has to be read in two layers: the rover logs tell us what was physically traversed, and the merged \gls{rf} dataset tells us what is already available in processed form for channel analysis. This is why EXP001, EXP002, and EXP004 still matter in the campaign narrative even though they do not contribute processed \gls{rf} entries to the current merged file.
+
+The second caveat is structural. The \texttt{cycle\_id} axis in the merged \gls{rf} NetCDF is a shared union axis across experiments, not a guarantee that every experiment occupies every cycle index. Validity is encoded by the availability masks, not merely by coordinate presence. Any downstream study that ignores \texttt{csi\_available} or \texttt{position\_available} risks accidentally treating absent data as zero-valued data or assuming that coordinate existence implies measurement existence.
+
+The third caveat concerns the acoustic path. The completeness report indicates that acoustic datasets were visible for eight experiments at report-generation time, but one of them (\texttt{EXP012}) remained unreadable after repair attempts because of a storage-related failure. As a result, the currently complete tri-modal subset is smaller than the total rover and \gls{rf} coverage would suggest. This does not invalidate the release; it simply means that users must choose subsets according to the modality requirements of their task. For positioning studies in particular, this means that the admissible training and evaluation set depends on whether the method is RF-only, acoustic-only, or multimodal.
+
+Taken together, these caveats point to a practical recommendation. Researchers should state up front whether they are using:
+\begin{itemize}
+    \item the full rover-logged campaign for spatial coverage analysis;
+    \item the 5{,}011-cycle \gls{rf}-enabled subset for channel-centric work; or
+    \item the 2{,}872-cycle fully aligned tri-modal subset for fusion, localization, or joint sensing studies.
+\end{itemize}
+\dataset{} already provides the metadata and quality-control tooling needed to make that choice explicit, which is itself a significant capability.

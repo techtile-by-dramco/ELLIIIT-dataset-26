@@ -1,0 +1,62 @@
+\usepackage{tikz}
+\usepackage{pgfplots}   % needed regardless of exteralization
+\pgfplotsset{compat=newest}
+%% the following commands are needed for some matlab2tikz features
+\usetikzlibrary{plotmarks}
+\usetikzlibrary{arrows.meta}
+\usetikzlibrary{arrows}
+\usetikzlibrary{calc,fadings,decorations.pathreplacing}
+\usetikzlibrary{fit,backgrounds}  % for the fit of boxes
+
+
+\newcommand{\tikzxmark}{%
+\tikz[scale=0.23] {
+    \draw[line width=0.7,line cap=round] (0,0) to [bend left=6] (1,1);
+    \draw[line width=0.7,line cap=round] (0.2,0.95) to [bend right=3] (0.8,0.05);
+}}
+\newcommand{\tikzcmark}{%
+\tikz[scale=0.23] {
+    \draw[line width=0.7,line cap=round] (0.25,0) to [bend left=10] (1,1);
+    \draw[line width=0.8,line cap=round] (0,0.35) to [bend right=1] (0.23,0);
+}}
+\newcommand{\yes}{\protect\tikzcmark}
+\newcommand{\no}{} %\protect\tikzxmark
+
+						% Tikz
+\usetikzlibrary{shapes,arrows,fit,positioning}
+\usetikzlibrary{shapes}
+\usetikzlibrary{spy}
+\usetikzlibrary{circuits}
+\usetikzlibrary{arrows}
+
+%%%%%%%%%%%% MAKE FIGURES MORE UNIFORM %%%%%%%%%%%%
+\pgfplotsset{
+    every axis/.append style={
+        title style={draw=none},
+        label style={font=\small},
+        legend style={
+            fill opacity=0.8,
+            nodes={scale=0.8, transform shape}, {draw=none}
+        },
+        tick align=outside,
+        tick pos=left,
+        x grid style={darkgray176},
+        xtick style={color=black},
+        y grid style={darkgray176},
+        ytick style={color=black},
+        grid=both,
+    },
+    every axis plot/.append style={
+        line width=2.0pt,
+    },
+}
+
+
+\newlength{\plotWidth}		% a parameter for scaling the TikZ plots
+\tikzset{%
+  >=latex,
+  inner sep=0pt,%
+  outer sep=2pt,%
+  mark coordinate/.style={inner sep=0pt,outer sep=0pt,minimum size=3pt,
+  fill=black,circle}%
+}

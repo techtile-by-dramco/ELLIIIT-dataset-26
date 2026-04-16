@@ -1,0 +1,48 @@
+\section{Platform and Acquisition Workflow}
+\label{sec:platform}
+
+\dataset{} is collected inside Techtile, a room-scale distributed testbed intended for communication, sensing, positioning, and related 6G experiments~\cite{techtilePrimer,techtileOpen6g}. Techtile is built around 140 detachable tiles with Ethernet-based power, communication, and synchronization, and later experiments on the platform have further demonstrated Qualisys-based sub-centimeter tracking, robotic 2D sampling, and phase-coherent RF operation over 41--42 ceiling elements at 920~MHz~\cite{syncWptTechtile,geomWpt2026,dliSuppression2026}. For the campaign documented in this paper, the measurement rig combines an ultrasonic speaker and an \gls{rf} \gls{ue} antenna on a common mechanical mount so that the acoustic and \gls{rf} channels are sampled at the same physical rover location. Ground-truth position is provided by the Qualisys system referenced in the experiment settings.
+
+The active \gls{rf} aperture used by the reciprocity workflow is the Techtile ceiling group: 42 receiver tiles (\texttt{A05} through \texttt{G10}), one synchronized pilot transmitter, and one separate continuous reference transmitter. One processed \gls{rf} row is stored per receiver hostname and per measurement cycle. A single physical stop therefore produces a vector of up to 42 complex \gls{csi} observations across the active ceiling receivers.
+
+The acquisition stack is organized around two control layers. The deployment layer pushes code and settings to the clients and starts the long-lived services. The orchestration layer then coordinates one end-to-end measurement cycle across rover motion, position logging, acoustics, and \gls{rf} synchronization. The measurement semantics are explicit in the code path:
+\begin{enumerate}
+    \item the rover moves to the commanded waypoint;
+    \item the system records the Qualisys position sample at that stop;
+    \item the acoustic client records one capture;
+    \item the \gls{rf} orchestrator triggers a synchronized \gls{rf} cycle across the participating tiles.
+\end{enumerate}
+The important consequence is that \texttt{(experiment\_id, cycle\_id)} is the fundamental alignment key throughout \dataset{}.
+
+For the \gls{rf} modality, synchronization is an important part of the measurement methodology. Recent Techtile work reports a three-layer synchronization chain consisting of pulse-per-second distribution for time alignment, a shared 10~MHz reference for frequency alignment, and reciprocity-based calibration to resolve the front-end phase offsets required for coherent operation~\cite{syncWptTechtile}. This is directly relevant for interpreting the phase-sensitive \gls{rf} measurements in \dataset{}.
+
+The recording path is modality-specific. Rover positions are logged as one CSV row per completed stop, carrying identifiers such as \texttt{experiment\_id}, \texttt{cycle\_id}, capture timestamp, and the measured $(x,y,z)$ coordinates. \gls{rf} measurements are logged per active host and per cycle as pilot-response records containing at least the experiment and cycle identifiers together with the measured pilot phase and amplitude. Acoustic measurements are recorded as microphone traces of the received chirp response after the speaker emission. These modality-specific runtime logs are later converted into aligned NetCDF products.
+
+\begin{table}[t]
+    \centering
+    \caption{Key acquisition settings reconstructed from the campaign configuration.}
+    \label{tab:config}
+    \setlength{\tabcolsep}{4pt}
+    \begin{tabular}{p{0.42\columnwidth}p{0.5\columnwidth}}
+        \toprule
+        Parameter & Value \\
+        \midrule
+        Testbed & Techtile distributed room-scale infrastructure \\
+        Active \gls{rf} aperture & 42 ceiling receiver tiles (\texttt{A05}--\texttt{G10}) \\
+        \gls{rf} sources & 1 pilot transmitter, 1 continuous reference transmitter \\
+        Center frequency & 920 MHz \\
+        Sample rate & 250 kS/s \\
+        Receiver gain & 80 \\
+        Positioning system & Qualisys, captured after each rover move \\
+        Acoustic rig & ultrasonic speaker co-mounted with the \gls{rf} antenna \\
+        Runtime recording & rover CSV logs, per-host \gls{rf} pilot logs, per-cycle acoustic waveform captures \\
+        Rover sweep plan & 7 sweeps with nominal spacings 120, 120, 90, 90, 67.5, 67.5, and 50.6 mm \\
+        \gls{rf} sync group & 43 synchronized subscribers in the pilot-synchronization loop \\
+        Cycle semantics & 1 rover stop + 1 position sample + 1 acoustic capture + 1 \gls{rf} cycle \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\Cref{tab:config} highlights why \dataset{} is useful beyond one narrow experiment script. The campaign is based on a reproducible measurement protocol, explicit synchronization settings, and a consistent motion pattern rather than ad-hoc manual sampling. In particular, the rover planner uses a seven-sweep multi-resolution scan whose spacing is progressively reduced from 120 mm to approximately 50 mm. This makes the measurement process dense enough for spatial visualization while remaining operationally tractable for a multi-modal campaign.
+
+Post-processing begins after acquisition. The \gls{rf} parser scans the per-host result files, extracts complex pilot measurements, applies cable correction, joins the result with rover positions, filters consecutive duplicate positions using a tolerance derived from the rover configuration, and writes one merged NetCDF. The acoustic parser produces a separate per-experiment NetCDF of recorded waveforms. \dataset{} therefore preserves both the runtime logs and the processed analysis products.

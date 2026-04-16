@@ -1,0 +1,41 @@
+\section{Recorded Data Products and Positioning Capabilities}
+\label{sec:capabilities}
+
+\dataset{} exposes several distinct data products, each corresponding to a different layer of the workflow. At acquisition time, the rover logger writes one CSV row per completed move, the \gls{rf} clients write one runtime record per hostname and cycle, and the \gls{rf} orchestrator writes one YAML summary entry per synchronized cycle. The post-processing path then converts these operational files into analysis-ready NetCDF products. The use of hierarchical NetCDF products for the released tensors is also consistent with broader 6G testbed efforts that standardize reusable measurement datasets on top of NetCDF/HDF5 storage backends~\cite{dss6g}.
+
+The current merged \gls{rf} NetCDF in \texttt{results/} aggregates EXP003 and EXP005--EXP012 and has dimensions \texttt{experiment\_id} $\times$ \texttt{cycle\_id} $\times$ \texttt{hostname} $= 9 \times 1355 \times 42$. Its main variables are \texttt{csi\_real}, \texttt{csi\_imag}, \texttt{csi\_available}, \texttt{rover\_x}, \texttt{rover\_y}, \texttt{rover\_z}, and \texttt{position\_available}. One physical \gls{rf} observation is reconstructed as \texttt{csi\_real} $+ j\,\texttt{csi\_imag}$, while \texttt{csi\_available} indicates whether a given \texttt{(experiment\_id, cycle\_id, hostname)} tuple is populated. This design gives the user both direct array access and an explicit validity mask.
+
+The \gls{rf} product should be interpreted as a distributed spatial fingerprint of the rover location. Each cycle yields a 42-element complex vector over the ceiling tiles, derived from the per-host pilot phase and amplitude measurements after cable correction. Across the 5{,}011 populated \gls{rf} cycles in the merged file, the dataset stores 210{,}068 tile-level complex \gls{csi} samples. Host coverage is also strong: 4{,}617 of the 5{,}011 \gls{rf} cycles contain all 42 ceiling-tile entries, and the remaining 394 cycles contain 41 entries. In other words, the typical measurement point is not a sparse partial vector but a nearly complete 42-element spatial snapshot. This makes the \gls{rf} modality directly usable for fingerprint-based positioning, for geometry-aware inference that exploits the distributed aperture, and for learning spatial channel maps that are later inverted for localization.
+
+The acoustic product complements this with waveform-level information. The acoustic pipeline writes one NetCDF per experiment with waveform data organized on \texttt{(experiment\_id, cycle\_id, microphone\_label, sample\_index)}. Each stored trace corresponds to the chirp response recorded by a microphone at the same rover stop as the paired \gls{rf} snapshot. The acoustic modality therefore preserves time-domain propagation structure such as direct-path timing, reverberation, and multipath signatures. These traces can be used for acoustic fingerprinting, feature extraction for position regression or classification, or model-based processing that uses arrival-time and room-response cues for localization.
+
+The key capability is tri-modal alignment. Because the acoustic and \gls{rf} parsers use the same \texttt{(experiment\_id, cycle\_id)} key, \dataset{} supports direct cycle-level joining between rover position, tile-level \gls{rf} channel measurements, and raw microphone waveforms. In the present completeness state, the fully aligned subset comprises 2{,}872 rover stops and 120{,}614 tile-level \gls{rf} observations with matching acoustic captures. Since each cycle also has a ground-truth rover pose from Qualisys, the release supports three natural positioning regimes: RF-only positioning, acoustic-only positioning, and joint multimodal positioning in which both feature sets are fused against the same $(x,y,z)$ target.
+
+The analysis workflow already demonstrates the most immediate downstream uses. The provided notebooks support:
+\begin{itemize}
+    \item campaign-level trajectory inspection and measurement-cloud visualization;
+    \item overview heatmaps of \gls{csi} phase and amplitude over the measurement set;
+    \item single-position spatial snapshots across the 42 ceiling receivers;
+    \item joint \gls{rf}-acoustic inspection at a selected rover stop;
+    \item export of movie sequences showing spatial evolution of phase and power.
+\end{itemize}
+These are not promised future tasks; they are concrete analyses already represented by scripts, notebooks, and exported figures in the current release.
+
+\begin{figure*}[t]
+    \centering
+    \begin{subfigure}[b]{0.54\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{../docs/public/images/notebook-exports/measurement_locations_trajectory.png}
+        \caption{Trajectory and sampled measurement locations exported from the rover-position notebook.}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.38\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{../docs/public/images/notebook-exports/csi_spatial_power_snapshot.png}
+        \caption{Example per-position \gls{rf} power snapshot over the 42 ceiling receivers.}
+    \end{subfigure}
+    \caption{Representative \dataset-generated analysis artifacts. Together they show that the release supports both campaign-scale spatial inspection and fine-grained tile-level interrogation at a selected rover stop.}
+    \label{fig:capability-artifacts}
+\end{figure*}
+
+\Cref{fig:capability-artifacts} illustrates the practical consequence of the \dataset{} design. The same release can be used to reason at two very different scales: the left subfigure supports campaign-level decisions about sampling density and region coverage, while the right subfigure supports tile-level interpretation of one synchronized \gls{rf} capture. This is a meaningful capability distinction for downstream users who may be interested in fingerprinting, distributed channel modeling, RF-acoustic fusion, or direct positioning inference.
