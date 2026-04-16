@@ -3,6 +3,33 @@
 
 \dataset{} is collected inside Techtile, a room-scale distributed testbed intended for communication, sensing, positioning, and related 6G experiments~\cite{techtilePrimer,techtileOpen6g}. Techtile is built around 140 detachable tiles with Ethernet-based power, communication, and synchronization, and later experiments on the platform have further demonstrated Qualisys-based sub-centimeter tracking, robotic 2D sampling, and phase-coherent RF operation over 41--42 ceiling elements at 920~MHz~\cite{syncWptTechtile,geomWpt2026,dliSuppression2026}. For the campaign documented in this paper, the measurement rig combines an ultrasonic speaker and an \gls{rf} \gls{ue} antenna on a common mechanical mount so that the acoustic and \gls{rf} channels are sampled at the same physical rover location. Ground-truth position is provided by the Qualisys system referenced in the experiment settings.
 
+\begin{figure*}[t]
+    \centering
+    \begin{subfigure}[b]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{../docs/public/images/techtile-room-overview.jpg}
+        \caption{Wide view of the Techtile measurement room used for the campaign.}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{../docs/public/images/techtile-room-setup.jpg}
+        \caption{Measurement setup showing the rover frame and room instrumentation.}
+    \end{subfigure}
+
+    \vspace{0.6em}
+
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{../docs/public/images/holder.jpg}
+        \caption{Close-up of the rover-mounted payload combining the \gls{rf} antenna and the omnidirectional acoustic speaker on a common holder.}
+    \end{subfigure}
+    \caption{Visual overview of the \dataset{} measurement setup, from room-scale deployment to the co-located RF-acoustic payload on the rover.}
+    \label{fig:measurement-setup-photos}
+\end{figure*}
+
+The physical measurement environment and payload are illustrated in \cref{fig:measurement-setup-photos}. These views are useful for interpreting both the room-scale geometry sampled by the rover and the fact that the RF and acoustic modalities are acquired from the same mechanical mount.
+
 The active \gls{rf} aperture used by the reciprocity workflow is the Techtile ceiling group: 42 receiver tiles (\texttt{A05} through \texttt{G10}), one synchronized pilot transmitter, and one separate continuous reference transmitter. One processed \gls{rf} row is stored per receiver hostname and per measurement cycle. A single physical stop therefore produces a vector of up to 42 complex \gls{csi} observations across the active ceiling receivers.
 
 The acquisition stack is organized around two control layers. The deployment layer pushes code and settings to the clients and starts the long-lived services. The orchestration layer then coordinates one end-to-end measurement cycle across rover motion, position logging, acoustics, and \gls{rf} synchronization. The measurement semantics are explicit in the code path:

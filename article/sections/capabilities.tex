@@ -11,6 +11,12 @@ The acoustic product complements this with waveform-level information. The acous
 
 The key capability is tri-modal alignment. Because the acoustic and \gls{rf} parsers use the same \texttt{(experiment\_id, cycle\_id)} key, \dataset{} supports direct cycle-level joining between rover position, tile-level \gls{rf} channel measurements, and raw microphone waveforms. In the present completeness state, the fully aligned subset comprises 2{,}872 rover stops and 120{,}614 tile-level \gls{rf} observations with matching acoustic captures. Since each cycle also has a ground-truth rover pose from Qualisys, the release supports three natural positioning regimes: RF-only positioning, acoustic-only positioning, and joint multimodal positioning in which both feature sets are fused against the same $(x,y,z)$ target.
 
+The post-processing workspace now makes the acoustic positioning path concrete rather than merely hypothetical. It includes a graph-based walk generator and persisted train/test trajectory splits, with 2{,}500 generated training walks and 50 held-out test walks. The acoustic positioning scripts operate on these synchronized paths by selecting anchor microphones from the distributed ceiling array, applying chirp pulse compression, estimating time-of-arrival ranges, and solving a least-squares position estimate for each rover stop. The current configuration uses up to 50 selected anchors per stop with sum-rate-based ranking and a calibrated speed-of-sound model, which means that the released waveform data is already exercised by a full end-to-end localization pipeline.
+
+The saved evaluation artifacts are strong enough to summarize as experimental evidence. The calibrated acoustic results cover 50 held-out paths and 550 localized rover stops. Across that set, the mean 2D positioning error is 0.110~m with 0.127~m RMSE, while the mean 3D positioning error is 0.130~m with 0.144~m RMSE. The accompanying ranging records contain 27{,}500 anchor-wise distance estimates with mean absolute error 0.311~m. These values should be interpreted as documented baseline performance of the current model-based acoustic pipeline, not as an upper bound on what the dataset can support.
+
+The project also includes an \gls{rf} positioning workspace in \texttt{post-processing/rf-pos/}. At present, that code extracts phase observations from the distributed ceiling aperture and plots geometry-constrained candidate positions from the measured phases. This is useful to mention in the paper because it shows that \dataset{} is already being used for direct \gls{rf} localization analysis as well, but the \gls{rf} pipeline is still exploratory compared with the more complete acoustic ranging-and-localization path.
+
 The analysis workflow already demonstrates the most immediate downstream uses. The provided notebooks support:
 \begin{itemize}
     \item campaign-level trajectory inspection and measurement-cloud visualization;
@@ -19,7 +25,7 @@ The analysis workflow already demonstrates the most immediate downstream uses. T
     \item joint \gls{rf}-acoustic inspection at a selected rover stop;
     \item export of movie sequences showing spatial evolution of phase and power.
 \end{itemize}
-These are not promised future tasks; they are concrete analyses already represented by scripts, notebooks, and exported figures in the current release.
+Taken together with the acoustic and \gls{rf} post-processing scripts, these are not promised future tasks; they are concrete analyses already represented by scripts, notebooks, and exported figures in the present project release.
 
 \begin{figure*}[t]
     \centering
