@@ -72,3 +72,74 @@ results/acoustic_*.nc
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.idx
+*.ilg
+*.ind
+*.lof
+*.log
+*.lot
+*.out
+*.run.xml
+*.synctex.gz
+*.toc
+*.xdv
+
+# Glossaries
+*.acn
+*.acr
+*.alg
+*.glg
+*.glo
+*.gls
+*.ist
+
+# Nomenclature
+*.nlo
+*.nls
+
+# TikZ externalization
+*.dpth
+*.md5
+
+# latexmk
+*.latexmk
+
+# minted / pygments
+_minted*
+*.pyg
+
+# temporary files
+*.tmp
+*.temp
+
+# generated PDFs (optional – remove if you want PDFs tracked)
+*.pdf
+
+# editor
+*~
+*.swp
+*.swo
+.DS_Store
+
+# VSCode
+.vscode/
+
+# TeXstudio
+*.txss
+
+# TeXworks
+*.bak
+
+# build directories
+build/
+dist/
+out/
