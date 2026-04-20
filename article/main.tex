@@ -2,25 +2,53 @@
 \IEEEoverridecommandlockouts
 
 \input{preamble}
+\input{article/auto_names}
+
+\usepackage{orcidlink}
+
+\defineauthors[false]{gilles,bert,daan,jarne,gustav}
     
 \begin{document}
 
-\title{\dataset: A Synchronized Multimodal RF-Acoustic Dataset for Positioning in Distributed Environments}
+\title{\dataset: A Synchronized Multimodal RF-Acoustic Dataset for Positioning in Distributed Environments%
+\thanks{Identify applicable funding agency here. If none, delete this.}%
+\thanks{For the purpose of open access, the author has applied a CC BY public copyright license to any Author Accepted Manuscript version arising from this submission.}}
 
 \author{
-\IEEEauthorblockN{Author Names Omitted for Draft Preparation}
-\IEEEauthorblockA{Affiliations to be inserted before submission}
+%%%% AUTHORS %%%%
+\IEEEauthorblockN{%
+Gilles Callebaut\,\orcidlink{0000-0003-2413-986X}\IEEEauthorrefmark{1},
+Daan Delabie\,\orcidlink{0000-0003-2413-986X}\IEEEauthorrefmark{1},
+Bert Pyck\,\orcidlink{0000-0003-2413-986X}\IEEEauthorrefmark{1},
+Jarne Van Mulders\,\orcidlink{0000-0003-2413-986X}\IEEEauthorrefmark{1},
+Gustav Nilsson\,\orcidlink{0000-0003-2413-986X}\IEEEauthorrefmark{2}
 }
+%%%% AFFILIATIONS %%%%% ...
+\IEEEauthorblockA{\IEEEauthorrefmark{1}% 2nd affiliations
+Department of Electrical Engineering, KU Leuven, Belgium}
+\IEEEauthorrefmark{2}% 2nd affiliations
+Lund}
 
 \maketitle
 
+
+\gilles{first cleaning up the GenAI crap.}
+
 \begin{abstract}
-This paper documents \dataset{}, a synchronized measurement campaign for distributed wireless sensing and positioning in the Techtile testbed. The acquisition stack coordinates rover motion, Qualisys-based ground truth, acoustic chirp capture, and radio-frequency (\gls{rf}) reciprocity measurements. Each acquisition cycle corresponds to one rover stop, one position sample, one acoustic recording, and one \gls{rf} snapshot across the active ceiling aperture. The \gls{rf} modality is recorded as per-host pilot measurements and released as complex channel-state-information tensors, while the acoustic modality is recorded as synchronized microphone waveforms and released as aligned waveform tensors. The campaign spans 12 named experiments and 7{,}579 rover position samples. The merged \gls{rf} NetCDF exposes 9 experiments, 5{,}011 populated \gls{rf} cycles, 42 ceiling receiver tiles, and 210{,}068 complex channel-state-information samples. A completeness analysis further identifies 3{,}714 acoustic cycles and 2{,}872 fully aligned \gls{rf}+rover+acoustic cycle pairs. Beyond documenting the recorded assets, we also report the now-implemented downstream experiments: a walk-based acoustic positioning pipeline that performs anchor selection, pulse-compression ranging, and least-squares localization on held-out rover trajectories, together with exploratory phase-based \gls{rf} positioning utilities. We detail how the measurements are recorded, quantify per-experiment coverage, describe the RF and acoustic data contents, and explain how the aligned modalities support RF-only, acoustic-only, and joint positioning workflows.
+This paper documents \dataset{}, a synchronized measurement campaign for distributed wireless sensing and positioning in the Techtile testbed. It consists of \gls{rf} and acoustic measurements distributed over an 3-by-6m area indoor, yeidlign in total \num{2872} spatial samples. an antenna and omnidirectional speaker is co-located. The channel-state-information is estimated across a 42 antennas over a ceiling spanning 4x8m. The acoutsic modality is synchronized microphone waveforms XX microphones containing the received aplitude.
+
+RF 920 mhz. Acoustic ....
+
+phase-coherent
+
+ Beyond documenting the recorded assets, we also report the now-implemented downstream experiments: a walk-based acoustic positioning pipeline that performs anchor selection, pulse-compression ranging, and least-squares localization on held-out rover trajectories, together with exploratory phase-based \gls{rf} positioning utilities. We detail how the measurements are recorded, quantify per-experiment coverage, describe the RF and acoustic data contents, and explain how the aligned modalities support RF-only, acoustic-only, and joint positioning workflows.
 \end{abstract}
 
 \begin{IEEEkeywords}
 dataset, positioning, localization, Techtile, channel state information, multimodal sensing
 \end{IEEEkeywords}
+
+\tableofcontents % jst to keep an overview
 
 \input{sections/introduction}
 \input{sections/platform}
@@ -30,7 +58,7 @@ dataset, positioning, localization, Techtile, channel state information, multimo
 \input{sections/conclusion}
 
 \section*{Acknowledgment}
-This draft was derived from the current \dataset{} campaign artifacts, generated figures, and completeness reports. The final submission version should replace the placeholder author block and, if needed, expand the project- and funding-specific acknowledgments.
+Geof Ottoy, bert cox
 
 
 \printbibliography%
