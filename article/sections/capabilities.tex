@@ -11,6 +11,32 @@ The acoustic product complements this with waveform-level information. The acous
 
 The key capability is tri-modal alignment. Because the acoustic and \gls{rf} parsers use the same \texttt{(experiment\_id, cycle\_id)} key, \dataset{} supports direct cycle-level joining between rover position, tile-level \gls{rf} channel measurements, and raw microphone waveforms. In the present completeness state, the fully aligned subset comprises 2{,}879 rover stops and 120{,}536 tile-level \gls{rf} observations with matching acoustic captures. The complete subset spans 5.57~m in the Qualisys $x$ direction and 2.71~m in the $y$ direction. Since each cycle also has a ground-truth rover pose from Qualisys, the release supports three natural positioning regimes: RF-only positioning, acoustic-only positioning, and joint multimodal positioning in which both feature sets are fused against the same $(x,y,z)$ target.
 
+\Cref{fig:rf-acoustic-position-waveforms,fig:csi-position-heatmaps} show two notebook-derived views of this alignment and \gls{rf} structure: one cycle-level acoustic waveform matrix joined to a selected \gls{rf} position, and phase/amplitude heatmaps over a sequence of \gls{rf} cycles.
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=0.98\textwidth]{figures/notebook-exports/rf_acoustic_position_waveform_heatmap.png}
+    \caption{Acoustic waveform inspection for the position resolved by the joint \gls{rf}-acoustic notebook. The upper panel shows one microphone trace for \texttt{EXP003}/cycle~1, while the lower panel shows the corresponding waveform matrix for the first microphones with available data at the same acquisition cycle.}
+    \label{fig:rf-acoustic-position-waveforms}
+\end{figure*}
+
+\begin{figure*}[t]
+    \centering
+    \begin{subfigure}[t]{0.98\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{figures/notebook-exports/csi_position_phase_heatmap.png}
+        \caption{\gls{csi} phase over the selected cycle window.}
+    \end{subfigure}
+    \vspace{0.4em}
+    \begin{subfigure}[t]{0.98\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{figures/notebook-exports/csi_position_amplitude_heatmap.png}
+        \caption{\gls{csi} amplitude over the same cycle window.}
+    \end{subfigure}
+    \caption{Heatmaps exported from \texttt{tutorial\_csi\_per\_position.ipynb}. The rows are ordered ceiling receiver hostnames, and the columns show the final cycle IDs in the selected experiment window. Together they expose stable receiver-dependent structure and temporal variation in the \gls{rf} channel tensor.}
+    \label{fig:csi-position-heatmaps}
+\end{figure*}
+
 The post-processing workspace now makes the acoustic positioning path concrete rather than merely hypothetical. It includes a graph-based walk generator and persisted train/test trajectory splits, with 2{,}500 generated training walks and 50 held-out test walks. The acoustic positioning scripts operate on these synchronized paths by selecting anchor microphones from the distributed ceiling array, applying chirp pulse compression, estimating time-of-arrival ranges, and solving a least-squares position estimate for each rover stop. The current configuration uses up to 50 selected anchors per stop with sum-rate-based ranking and a calibrated speed-of-sound model, which means that the released waveform data is already exercised by a full end-to-end localization pipeline.
 
 The saved evaluation artifacts are strong enough to summarize as experimental evidence. The calibrated acoustic results cover 50 held-out paths and 550 localized rover stops. Across that set, the mean 2D positioning error is 0.110~m with 0.127~m RMSE, while the mean 3D positioning error is 0.130~m with 0.144~m RMSE. The accompanying ranging records contain 27{,}500 anchor-wise distance estimates with mean absolute error 0.311~m. These values should be interpreted as documented baseline performance of the current model-based acoustic pipeline, not as an upper bound on what the dataset can support.
