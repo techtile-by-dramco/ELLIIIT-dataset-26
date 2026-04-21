@@ -1,7 +1,7 @@
 \section{Platform and Acquisition Workflow}
 \label{sec:platform}
 
-\dataset{} is collected inside Techtile, a room-scale distributed testbed intended for communication, sensing, positioning, and related 6G experiments~\cite{techtilePrimer,techtileOpen6g}. Techtile is built around 140 detachable tiles with Ethernet-based power, communication, and synchronization, and later experiments on the platform have further demonstrated Qualisys-based sub-centimeter tracking, robotic 2D sampling, and phase-coherent RF operation over 41--42 ceiling elements at 920~MHz~\cite{syncWptTechtile,geomWpt2026,dliSuppression2026}. For the campaign documented in this paper, the measurement rig combines an ultrasonic speaker and an \gls{rf} \gls{ue} antenna on a common mechanical mount so that the acoustic and \gls{rf} channels are sampled at the same physical rover location. Ground-truth position is provided by the Qualisys system referenced in the experiment settings.
+\dataset{} is collected inside Techtile, a room-scale distributed testbed intended for communication, sensing, positioning, and related 6G experiments~\cite{techtilePrimer,techtileOpen6g}. Techtile is built around 140 detachable tiles with Ethernet-based power, communication, and synchronization, and later experiments on the platform have further demonstrated Qualisys-based sub-centimeter tracking, robotic 2D sampling, and phase-coherent RF operation over 41--42 ceiling elements at 920~MHz~\cite{syncWptTechtile,geomWpt2026,dliSuppression2026}. For the campaign documented in this paper, the measurement rig combines an ultrasonic speaker and an \gls{rf} \gls{ue} antenna on a common mechanical mount so that the acoustic and \gls{rf} channels are sampled at the same physical rover location. Ground-truth position is provided by the Qualisys system.
 
 \begin{figure*}[t]
     \centering
@@ -19,9 +19,9 @@
     \begin{subfigure}[t]{0.32\textwidth}
         \centering
         \includegraphics[height=5cm]{figures/holder.jpg}
-        \caption{Close-up of the rover-mounted payload combining the \gls{rf} antenna and the omnidirectional acoustic speaker on a common holder.}
+        \caption{Close-up of the rover-mounted payload combining the \gls{rf} antenna and the omnidirectional acoustic speaker on a common holder.}\label{fig:rover}
     \end{subfigure}
-    \caption{Visual overview of the \dataset{} measurement setup, from room-scale deployment to the co-located RF-acoustic payload on the rover.}
+    \caption{Visual overview of the \dataset{} measurement setup, from room-scale deployment to the co-located RF-acoustic payload on the rover. \gilles{TODO cose up ceiling and mics inside Techtile.}}
     \label{fig:measurement-setup-photos}
 \end{figure*}
 
@@ -29,26 +29,33 @@ The physical measurement environment and payload are illustrated in \cref{fig:me
 
 \subsection{Positioning and Measurement Procedure}
 
-The rover follows a reproducible seven-sweep multi-resolution scan over an approximately $1.23 \times 1.23$~m work area. The motion planner alternates horizontal and vertical serpentine passes and progressively reduces the waypoint spacing from 120~mm to about 50~mm, so later sweeps densify regions already visited by the coarse passes. This provides dense spatial coverage while keeping the sampling pattern automated and repeatable.
+The measurements are coordinated by a central orchestrator, that coordinates the movement of the rover, position acquisition and RF and acoustic sampling.
 
-Ground-truth positioning is provided by the Qualisys system configured to track the rigid body \texttt{ELLIIT}. After every completed rover move, the orchestrator requests one fresh position update, suppresses stale repeats, and appends \texttt{experiment\_id}, \texttt{cycle\_id}, \texttt{meas\_id}, UTC capture time, measured $(x,y,z)$ coordinates, and the reported rotation matrix to the per-experiment rover CSV. The position sample is therefore part of the acquisition cycle itself rather than an offline interpolation step.
-
-The acquisition stack is organized around two control layers. The deployment layer pushes code and settings to the clients and starts the long-lived services. The orchestration layer then coordinates one end-to-end measurement cycle across rover motion, position logging, acoustics, and \gls{rf} synchronization. The measurement semantics are explicit in the code path:
+\subsubsection{Orchestator}
+The acquisition stack is organized around two control layers. The deployment layer pushes code and settings to the clients and starts the long-lived services. The orchestration layer then coordinates one end-to-end measurement cycle across rover motion, position logging, acoustics, and \gls{rf} synchronization. 
 \begin{enumerate}
     \item the rover moves to the commanded waypoint;
     \item the system records one fresh Qualisys position sample at that stop;
     \item the acoustic client records one chirp-response capture;
     \item the \gls{rf} orchestrator triggers one synchronized \gls{rf} cycle across the participating tiles.
 \end{enumerate}
-The important consequence is that \texttt{(experiment\_id, cycle\_id)} is the fundamental alignment key throughout \dataset{}.
 
-\subsection{RF Measurements}
+
+\subsubsection{Rover}
+RF and acoutsic mounted on a rover xy-plotter and \cref{fig:rover}.
+The rover follows a reproducible multi-resolution scan over an approximately $1.23 \times 1.23$~m work area. It performs a sweep over the area and with each iterations the density increases. Hence, the density of the collected samples is related to the total measurement time per area. This can be observed in \cref{fig:samples}.
+
+\subsubsection{Positioning Ground Truth}
+\gilles{@Daan more ifnormation about qualysis?}
+Ground-truth positioning is provided by the Qualisys system. After every completed rover move, the orchestrator requests one fresh position update $(x,y,z)$ coordinates, and the reported rotation matrix. Note that in this dataset, the rover only moves in the $(x,y)$ plane, but the $z$-coordinates are stored as well.
+
+\subsection{RF Orchestrator and Measurements}
 
 The active \gls{rf} aperture used by the reciprocity workflow is the Techtile ceiling group: 42 receiver tiles (\texttt{A05} through \texttt{G10}), one synchronized pilot transmitter (\texttt{T01}), and one separate continuous reference transmitter (\texttt{REF01}). The campaign configuration sets the \gls{rf} measurements to 920~MHz with a 250~kS/s sample rate and receiver gain 80.
 
-At each rover stop, the \gls{rf} client waits for an \texttt{ALIVE} quorum from the synchronized participants, inserts a short pre-sync delay, publishes a cycle-specific \texttt{SYNC} message, and waits for the corresponding \texttt{DONE} quorum before reporting completion to the main orchestrator. This cycle-level trigger is consistent with the broader Techtile synchronization chain of pulse-per-second distribution for time alignment, a shared 10~MHz reference for frequency alignment, and reciprocity-based calibration for front-end phase alignment~\cite{syncWptTechtile}. For phase-sensitive \gls{rf} positioning, that synchronization is part of the measurement definition rather than a background implementation detail.
+At each rover stop, the \gls{rf} client waits for an \texttt{ALIVE} quorum from the synchronized participants, inserts a short pre-sync delay, publishes a cycle-specific \texttt{SYNC} message, and waits for the corresponding \texttt{DONE} quorum before reporting completion to the main orchestrator. This cycle-level trigger is consistent with the broader Techtile synchronization chain of pulse-per-second distribution for time alignment, a shared 10~MHz reference for frequency alignment, and reciprocity-based calibration for front-end phase alignment~\cite{syncWptTechtile}. 
 
-Each receiver stores one pilot-response record per cycle containing at least the experiment and cycle identifiers together with the measured pilot phase and amplitude. The reciprocity client estimates a circular-mean pilot phase from the captured IQ samples and pairs it with an \gls{rms} pilot amplitude; post-processing then applies cable-phase correction and converts the result into one complex \gls{csi} value per hostname. A single physical stop therefore produces a vector of up to 42 complex \gls{csi} observations across the active ceiling receivers.
+Each receiver stores one pilot-response record per cycle containing the measured pilot phase and amplitude. The reciprocity client estimates a circular-mean pilot phase from the captured IQ samples and pairs it with an \gls{rms} pilot amplitude; post-processing then applies cable-phase correction and converts the result into one complex \gls{csi} value per ceiling antenna. A single physical stop therefore produces a vector of up to 42 complex \gls{csi} observations across the active ceiling receivers.
 
 \subsection{Acoustic Measurements}
 
