@@ -34,19 +34,20 @@ The key capability is tri-modal alignment. Because the acoustic and \gls{rf} par
     \label{fig:csi-position-heatmaps}
 \end{figure}
 
-\begin{figure}[t]
+
+\begin{figure*}[b]
+    \centering
+\includegraphics[width=0.9\textwidth]{article/figures/correlation_graph_good_example.png}
+    \caption{Ranging estimate example for cycle 304 EXP007 microphone C04 with the correlation values and LPF values. The correct peak resulting in the estimated range is determined using the peak-prominence algorithm. The estimated and ground-truth range is depicted.}
+    \label{fig:correlation_graph_example}
+\end{figure*}
+
+\begin{figure}[]
     \centering
     \includegraphics[width=\linewidth]{article/figures/paths.png}
     \caption{Four randomly generated walks. Red indicates a static point, and blue indicates points on the paths between static points.}
     \label{fig:generatedwalks}
 \end{figure}
-
-\begin{figure*}[]
-    \centering
-\includegraphics[width=0.9\textwidth]{article/figures/correlation_graph_good_example.png}
-    \caption{Ranging estimate example for cycle 304 EXP007 microphone C04 with the correlation values and LPF values. The correct peak resulting in the estimated range is determined using the peak-prominence algorithm. The estimated and ground-truth range is depicted. \vspace{-3mm}}
-    \label{fig:correlation_graph_example}
-\end{figure*}
 
 The post-processing workspace now makes the RF--acoustic positioning path concrete rather than merely hypothetical. It includes a graph-based walk generator and persisted train/test trajectory splits, with 2500 generated training walks and 50 held-out test walks. The test set positions are excluded from the training walks data.
 The walk generator works by choosing a sequence of static flagged positions, and repeatedly performing Dijkstra's algorithm to find the shortest path from one static point to the next, along the rover measurement points. Static positions are introduced to perform acoustic positioning. The sequence of static points can either be randomly generated or manually specified. There is also an option to forbid the paths from containing specific points. Figure \ref{fig:generatedwalks} showcases four examples of randomly generated walks.
@@ -58,7 +59,7 @@ The saved evaluation artifacts are strong enough to summarize as experimental ev
 \begin{figure}[t]
     \centering
     \includegraphics[width=\linewidth]{figures/notebook-exports/csi_spatial_power_snapshot.png}
-    \caption{Example per-position \gls{rf} power snapshot over the 42 ceiling receivers. \vspace{-3mm}}\label{fig:capability-artifacts}
+    \caption{Example per-position \gls{rf} power snapshot over the 42 ceiling receivers.}\label{fig:capability-artifacts}
 \end{figure}
 
 The analysis workflow already demonstrates the most immediate downstream uses. The provided notebooks support:
