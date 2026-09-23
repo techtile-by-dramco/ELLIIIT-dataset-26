@@ -46,6 +46,7 @@ export default defineConfig({
           items: [
             { label: "Techtile Background", slug: "reference/techtile-background" },
             { label: "Measurement Setup", slug: "reference/measurement-setup" },
+            { label: "Assumptions and Limitations", slug: "reference/assumptions-and-limitations" },
             { label: "Measurement Sequence", slug: "reference/measurement-sequence" },
             { label: "Data Products", slug: "reference/data-products" },
             { label: "Interpretation and Joins", slug: "reference/interpretation-and-joins" },

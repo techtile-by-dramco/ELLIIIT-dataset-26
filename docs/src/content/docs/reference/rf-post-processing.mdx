@@ -28,6 +28,8 @@ It performs:
 6. drop consecutive duplicate-position cycles using `grid.min_spacing / 5` per axis
 7. write one NetCDF dataset
 
+The resulting CSI already includes cable-phase correction. It retains the reference-minus-received phase convention and receiver IQ amplitude scale. The parser does not apply the approximate RF phase-center height offset, remove multipath, or turn partial snapshots into complete arrays. Users must still apply the [validity filters](../interpretation-and-joins/#filter-valid-rf-snapshots) and follow [Assumptions and Limitations](../assumptions-and-limitations/) for model-specific processing.
+
 Useful commands:
 
 ```bash

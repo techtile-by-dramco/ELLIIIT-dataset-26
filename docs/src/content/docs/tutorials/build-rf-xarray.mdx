@@ -12,7 +12,7 @@ Most readers of this documentation should start here:
 - you want to inspect rover positions, CSI, and acoustic chirps
 - you do **not** need the NAS, the raw RF result files, or the raw acoustic recordings
 
-The tutorial track assumes that the difficult part is already done: the datasets have already been extracted and filtered into NetCDF/xarray files such as:
+The runtime logs have already been parsed into NetCDF/xarray files such as those below. Analysis still requires validity filtering and the physical conventions described in [Assumptions and Limitations](../../reference/assumptions-and-limitations/):
 
 ```text
 results/csi_<experiment_id>.nc
@@ -132,6 +132,8 @@ acoustic_ds.attrs
 The stored CSI components are split into real and imaginary parts:
 
 ```python
+import numpy as np
+
 csi = ds["csi_real"] + 1j * ds["csi_imag"]
 phase = np.angle(csi)
 amplitude = np.abs(csi)
@@ -171,24 +173,9 @@ That means:
 - rover coordinates can still be `NaN`, so always check `position_available` and finite coordinates before using a pose
 - some original rover stops may be absent because duplicate consecutive positions are filtered before the dataset is written
 
-Safe starting pattern:
+Use the [complete-array and AP-subset examples](../../reference/interpretation-and-joins/#filter-valid-rf-snapshots) to apply the CSI and position masks together and align receiver geometry. Selecting cycles with `.any(dim="hostname")` only establishes that some receivers are present; it does not produce complete 42-AP snapshots. Never replace missing CSI with zeros.
 
-```python
-exp = ds.sel(experiment_id="EXP003")
-cycle_mask = exp["csi_available"].any(dim="hostname")
-cycle_ids = exp["cycle_id"].values[cycle_mask.values]
-
-csi = (exp["csi_real"] + 1j * exp["csi_imag"]).sel(cycle_id=cycle_ids)
-position_ok = (
-    exp["position_available"].sel(cycle_id=cycle_ids) > 0
-) & (
-    np.isfinite(exp["rover_x"].sel(cycle_id=cycle_ids))
-) & (
-    np.isfinite(exp["rover_y"].sel(cycle_id=cycle_ids))
-) & (
-    np.isfinite(exp["rover_z"].sel(cycle_id=cycle_ids))
-)
-```
+The reconstructed complex quantity retains the acquisition phase convention and receiver IQ amplitude scale. Cable-phase correction is already applied; RF phase-center correction is not. See [Assumptions and Limitations](../../reference/assumptions-and-limitations/) before treating CSI as a geometric channel model.
 
 ## If You Need Provenance Or Extraction Details
 
@@ -196,9 +183,9 @@ Most users can stop here and move on to the notebooks.
 
 If you are one of the maintainers who needs to know how these `.nc` files were built from raw RF logs, rover positions, and acoustic captures, see:
 
-- [RF Post-Processing](../reference/rf-post-processing/)
-- [Data Products](../reference/data-products/)
-- [Deployment and Acquisition](../reference/deployment-and-acquisition/)
+- [RF Post-Processing](../../reference/rf-post-processing/)
+- [Data Products](../../reference/data-products/)
+- [Deployment and Acquisition](../../reference/deployment-and-acquisition/)
 
 Once you have a `.nc` file, continue with:
 

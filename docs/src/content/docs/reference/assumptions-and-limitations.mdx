@@ -1,0 +1,129 @@
+---
+title: Assumptions and Limitations
+description: Validity masks, RF phase and amplitude conventions, geometry corrections, and limitations to account for when using the dataset.
+status: stable
+component: dataset
+---
+
+Use this guide before applying a localization model or reporting results. The processed files provide measurements and availability flags; they do not guarantee a noiseless channel, a complete receiver array, or a calibrated antenna phase-center position for every observation.
+
+## What is known and what is assumed
+
+| Topic | Interpretation for this release |
+| --- | --- |
+| Measurement point | One `(experiment_id, cycle_id)` identifies a static rover stop, with sequential position, acoustic, and RF acquisition. |
+| RF aperture | Up to 42 ceiling receivers, using channel 1 antenna coordinates and matching by `hostname`. |
+| RF carrier | 920 MHz; wavelength approximately 0.32586 m. |
+| Stored CSI | RMS pilot amplitude with reference-minus-received phase and cable-phase correction. |
+| Transmitter phase | Unknown relative to the receiver array; allow a common phase offset for each snapshot. |
+| Rover height | `rover_z` refers to the bottom of the transmit antenna. |
+| RF phase center | Approximate as `rover_z + 0.0785` m for the vertically mounted TI.92.2113; this is not a measured phase-center calibration. |
+| Propagation | Previous measurements suggest strong LoS with small multipath contributions. This release still needs a thorough propagation analysis. |
+| Availability | Masks indicate recorded entries, not measured SNR, calibration accuracy, or LoS quality. |
+
+## Runs, stops, and coverage
+
+The released merged RF file contains `EXP003`, `EXP005`, `EXP006`, `EXP007`, `EXP008`, `EXP009`, `EXP010`, `EXP011`, and `EXP012`. These are separate runs within the same Techtile campaign, covering different spatial regions and sampling densities. They are not nine independent environments. The broader acquisition logs also contain runs that are absent from this processed RF release.
+
+A cycle identifies one stop of the same rover-mounted transmitter, not a different physical user. Always join on both `experiment_id` and `cycle_id`; a cycle number alone is not unique across runs. The shared `cycle_id` coordinate is a union across experiments, so its length is not the number of measurements in each experiment. Use label-based selection with `.sel(...)`.
+
+The inspected merged file contains 5,011 populated RF cycles with valid positions: 4,617 have all 42 receivers and 394 have 41. In EXP003, cycles 1–527 have all 42 receivers; cycles 528 and 529 lack B09. These are checks for the current release, not cycle ranges to hard-code into filtering.
+
+For each observation, require `csi_available == 1` and finite real and imaginary CSI components. Require `position_available == 1` and finite `rover_x/y/z` when using ground truth. For a fixed 42-AP method, require all expected hostnames and valid CSI from every host. For a variable-size method, use the available subset and apply exactly the same host selection and ordering to CSI and geometry. Never replace missing measurements with zeros. A finite zero-amplitude entry still has no usable phase for phase-only processing; any additional amplitude or quality threshold is an analysis choice that should be reported.
+
+Runnable examples are in [Interpretation and Joins](../interpretation-and-joins/#filter-valid-rf-snapshots). Adding the examples to a notebook is tracked in [issue #5](https://github.com/techtile-by-dramco/ELLIIIT-dataset-26/issues/5).
+
+The RF parser can remove consecutive duplicate-position cycles using a per-axis tolerance derived from `grid.min_spacing / 5`. In the inspected release this tolerance is 0.01 m and 842 cycles were removed. Consult the `duplicate_position_*` dataset attributes for your file. This is a filtering tolerance, not the position system's accuracy, and it does not guarantee that all retained points are spatially distinct.
+
+## CSI construction and phase convention
+
+The stored complex quantity is reconstructed as:
+
+```python
+csi_stored = ds["csi_real"] + 1j * ds["csi_imag"]
+```
+
+In the reciprocity acquisition path, channel 0 receives the reference and channel 1 receives the rover pilot. The runtime calculates a circular mean of `phase_ch0 - phase_ch1`. The RF parser then constructs:
+
+```text
+csi_stored = pilot_amplitude * exp(1j * (pilot_phase - cable_phase_rad))
+```
+
+Cable phases in `client/ref-RF-cable.yml` are in degrees and are converted to radians by the parser. **The released CSI already includes this correction. Do not subtract it again.** The stored phase is obtained with `np.angle(csi_stored)` in radians; a plotted phase in degrees is only a display conversion.
+
+For a conventional propagation model with a negative exponent, `rho_m * exp(-1j * 2*pi*d_m/lambda) * exp(-1j * phi)`, the reference-minus-received convention implies the conjugate representation:
+
+```python
+y_model = np.conj(csi_stored)
+```
+
+This sign conversion follows the acquisition and parsing code. It does not establish that all hardware phase offsets have been removed or that a pure LoS model fits every measurement. Keep the stored representation available, apply conjugation once at the model interface, and use a consistent sign in differential-phase equations. Check the convention against known geometry on a separate validation subset before interpreting localization errors.
+
+The receiver array is intended to provide relative phase coherence through timing/frequency references and calibration. The rover transmitter is not phase locked to the array, so model a common unknown transmitter/reference phase **for each snapshot**. Relative AP phases can remove that common term; they do not remove AP-dependent residual errors. Do not infer absolute path length directly from a single wrapped phase, or assume phase continuity between cycles or experiments. Wavelength ambiguities remain even under ideal LoS.
+
+Implementation references: [pilot phase and amplitude extraction](https://github.com/techtile-by-dramco/ELLIIIT-dataset-26/blob/main/client/run_reciprocity.py), [CSI parser](https://github.com/techtile-by-dramco/ELLIIIT-dataset-26/blob/main/processing/parsing/extract_csi_from_smb_v2.py), and [cable-phase corrections](https://github.com/techtile-by-dramco/ELLIIIT-dataset-26/blob/main/client/ref-RF-cable.yml). Record the code revision used for reproducibility.
+
+## Amplitude, power, and likelihood models
+
+The CSI magnitude is the RMS received pilot amplitude in receiver IQ units. It includes the effects of transmit level, propagation, antenna response, and receiver gain. The parser does not convert it into watts, dBm, or a propagation coefficient normalized to unit physical transmit power. Cable-phase correction does not calibrate amplitude.
+
+Measured magnitudes can be retained as a baseline for a localization cost that estimates or eliminates unknown per-AP amplitudes. For example, POLO's concentrated cost has this property: scaling a whole snapshot by a common nonzero factor does not change its selected position. Normalizing each AP separately changes the weighting and therefore the estimator. Unit pilot and transmit-power factors in such a model are normalization choices, not statements about the measured transmit power.
+
+An exact maximum-likelihood interpretation additionally depends on the assumed noise statistics and propagation model. This release does not supply a per-entry noise variance, SNR, or phase-uncertainty estimate in the merged RF tensor. An availability flag alone does not certify equal noise variance, absence of clipping, or accurate phase at low received amplitude. State any weighting, normalization, amplitude threshold, or additional quality screening used in your analysis.
+
+Likewise, `20 * log10(abs(csi_stored))` is a relative level referenced to the IQ scale, not an absolute dBm measurement. See [POLO, Section II-C](https://arxiv.org/html/2512.10879v1#S2.SS3) for that method's amplitude and noise assumptions.
+
+## Frequency and bandwidth
+
+Use a carrier frequency of **920 MHz** and `lambda = 299792458 / 920e6`, approximately **0.32586 m**, for geometric phase models. The intentional receiver tuning offset of 1 kHz places the tone at baseband; it does not replace the transmitted RF carrier in the wavelength calculation.
+
+The RF sample rate is 250 kS/s, but the released RF data contains one complex pilot summary per receiver and cycle. It is single-frequency CSI, not a wideband channel impulse response, an OFDM subcarrier array, or the raw IQ time series. The sample rate does not provide delay resolution in this tensor. Reflected and direct-path contributions are combined in the stored measurement and cannot be separated by delay from this single complex coefficient alone.
+
+## Receiver geometry and the RF phase center
+
+Use channel **1** from [techtile_antenna_locations.yml](https://github.com/techtile-by-dramco/techtile-description/blob/main/geometry/techtile_antenna_locations.yml) for each ceiling receiver. Coordinates are in metres. Keep the AP and rover coordinates in the same room coordinate frame and do not substitute tile centers or channel 0 coordinates. The generic `channel: 0` setting in the experiment configuration does not describe the receiver antenna selected by the reciprocity pilot-capture code.
+
+Match by hostname rather than relying on YAML order. After filtering or sorting, `y[m]` must correspond to `ap_xyz[m]`. Verify that each selected host has finite 3D geometry. The tutorial geometry loader currently fetches an external file from its `main` branch; save the geometry file or record its commit/hash with your results, since the external definition can change independently of the NetCDF.
+
+The Qualisys coordinates are logged ground truth for the rig reference, not an exact electromagnetic phase-center calibration. As described in [Measurement Setup](../measurement-setup/#rf-antenna-position-and-phase-center-approximation), the TI.92.2113 is 157 mm long and `rover_z` is at its bottom. The ideal-dipole, vertical-mount approximation gives:
+
+```text
+x_rf = rover_x
+y_rf = rover_y
+z_rf = rover_z + 0.0785  (metres)
+```
+
+The offset's effective value and uncertainty have not been calibrated for this antenna in this setup. Apply the approximation once to derived RF coordinates; preserve the stored rover coordinates, and state the assumed offset in results. It is not a correction for the acoustic source. Validation and consistent post-processing support are tracked in [issue #6](https://github.com/techtile-by-dramco/ELLIIIT-dataset-26/issues/6).
+
+The rover scans a horizontal region while the receivers are on the ceiling. Even when estimating only x and y at an assumed known height, compute full **3D Euclidean distances** to each AP. A localization method derived for coplanar 2D anchors and users needs its geometry adapted; dropping the height difference changes the predicted carrier phase. State whether height was known, fixed, or estimated, and whether reported error is horizontal or 3D.
+
+## LoS, multipath, and calibration limits
+
+Previous measurements in Techtile indicate that a strong LoS component with small multipath contributions can be expected. A thorough investigation for this dataset remains outstanding; no measured per-link multipath ratio or LoS guarantee is supplied with the RF tensor.
+
+A LoS model is a reasonable initial baseline. The measured data still includes noise, reflected contributions, antenna effects, geometry uncertainty, and possible residual calibration errors. Conjugating CSI or adding the approximate antenna-height correction does not remove these effects. Localization error alone cannot identify which effect caused a mismatch. Clearly distinguish a noiseless simulation using the measured geometry from an evaluation using the measured CSI.
+
+## Acoustic joins and static acquisition
+
+Position, acoustic, and RF acquisition occur sequentially while the rover is stopped. The shared keys align a physical stop, not identical sample times across modalities. The records support static localization; replaying or interpolating them into a trajectory does not create a measured moving-user channel or establish Doppler and temporal phase behavior.
+
+Join only available `(experiment_id, cycle_id)` pairs. RF and acoustic files can contain different sets of cycles, and RF completeness does not imply that acoustic data exists. The completeness report's tri-modal count indicates presence across modalities, not 42 valid RF entries or a complete set of valid microphone traces.
+
+Acoustic `values` are recorded chirp responses, not precomputed ranges or isolated direct-path impulse responses. The parser uses NaNs for missing traces or trailing samples. Inspect the finite samples of the selected microphones, and handle missing or padded portions explicitly before filtering or correlation. Use the chirp and sampling settings associated with the release. The documented setup uses a 20–40 kHz chirp, 30 ms excitation, and a 250 kS/s sample rate. Reverberation, arrival selection, source/microphone offsets, and the assumed speed of sound matter for ranging. The expectation of a strong RF LoS component does not establish simple acoustic propagation.
+
+Check that downloaded acoustic files open successfully before treating their contents as available. The checked-in completeness report records unreadable/truncated files for some downloads; this is distinct from an experiment having no physical measurements. Consult the report's generation date and error section, and recheck completeness for your local files rather than copying a published total.
+
+## Reporting reproducible results
+
+For an evaluation, record:
+
+- RF and acoustic filenames or hashes, code revision, and geometry version;
+- experiments and cycle IDs retained, excluded counts, and complete-array or subset policy;
+- stored versus conjugated phase convention, amplitude scaling/weighting, and quality thresholds;
+- antenna reference point, applied RF offset, assumed height, and 2D versus 3D distance/error definitions;
+- propagation and noise assumptions, and any calibration estimated from data;
+- training, validation, and test selections and how spatial overlap was controlled.
+
+Nearby spatial samples and overlapping runs can make random row-wise splits optimistic for generalization to unseen locations. Fit any data-derived calibration or normalization on training/validation data, keep evaluation data separate, and describe the spatial split. This campaign samples one environment and a mostly fixed-height scan, so results alone do not establish performance in new rooms, at arbitrary heights, or for moving users.
+
+Some physical conventions are not encoded in the current NetCDF variable attributes. Keep these documented assumptions alongside your analysis instead of inferring units, phase calibration, or absolute power from variable names.

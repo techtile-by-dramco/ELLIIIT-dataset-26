@@ -41,6 +41,8 @@ The repository writes several different outputs. The most important ones are:
 
 For most readers of this docs site, this `.nc` file is the main entry point. The tutorial track assumes you already have this file and want to inspect or visualize its contents.
 
+Availability flags identify populated records; they do not encode per-entry SNR, phase uncertainty, or LoS quality. Some physical conventions are absent from the current variable attributes. Read [Assumptions and Limitations](../assumptions-and-limitations/) for the CSI phase sign, amplitude scale, 920 MHz carrier, and RF antenna reference point before using a geometric model.
+
 ## Processed acoustic xarray
 
 - location: `results/acoustic_<experiment_id>.nc`

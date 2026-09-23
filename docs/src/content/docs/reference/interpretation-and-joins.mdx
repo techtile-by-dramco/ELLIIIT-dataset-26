@@ -5,6 +5,8 @@ status: stable
 component: rf
 ---
 
+For the physical meaning of CSI, antenna offsets, and model assumptions, read [Assumptions and Limitations](../assumptions-and-limitations/).
+
 Before joining anything, keep this mental model in mind:
 
 1. one orchestrator cycle means one rover pose
@@ -116,21 +118,105 @@ For a worked walkthrough, open:
 - [Notebook: Acoustic Xarray Structure](../../tutorials/notebook-acoustic-xarray-structure/)
 - [Notebook: RF And Acoustic At One Position](../../tutorials/notebook-rf-acoustic-position/)
 
-Safe starting pattern:
+## Filter Valid RF Snapshots
+
+Start with an opened RF dataset `ds`. Build separate masks for individual receiver entries and rover positions. Equality checks avoid interpreting a missing flag as true.
 
 ```python
-exp = ds.sel(experiment_id="EXP003")
-cycle_mask = exp["csi_available"].any(dim="hostname")
-cycle_ids = exp["cycle_id"].values[cycle_mask.values]
+import numpy as np
 
-csi = (exp["csi_real"] + 1j * exp["csi_imag"]).sel(cycle_id=cycle_ids)
+exp = ds.sel(experiment_id="EXP003")
+csi_stored = exp["csi_real"] + 1j * exp["csi_imag"]
+ap_ok = (
+    (exp["csi_available"] == 1)
+    & np.isfinite(exp["csi_real"])
+    & np.isfinite(exp["csi_imag"])
+)
 position_ok = (
-    exp["position_available"].sel(cycle_id=cycle_ids) > 0
-) & (
-    np.isfinite(exp["rover_x"].sel(cycle_id=cycle_ids))
-) & (
-    np.isfinite(exp["rover_y"].sel(cycle_id=cycle_ids))
-) & (
-    np.isfinite(exp["rover_z"].sel(cycle_id=cycle_ids))
+    (exp["position_available"] == 1)
+    & np.isfinite(exp["rover_x"])
+    & np.isfinite(exp["rover_y"])
+    & np.isfinite(exp["rover_z"])
 )
 ```
+
+### Complete 42-AP snapshots
+
+Checking `.all(dim="hostname")` alone is insufficient if the file itself contains fewer than 42 hosts. First verify the expected ceiling aperture, then filter cycles using both CSI and position validity:
+
+```python
+expected_hosts = {
+    f"{column}{row:02d}" for column in "ABCDEFG" for row in range(5, 11)
+}
+hosts = exp["hostname"].values.astype(str)
+if len(hosts) != 42 or set(hosts) != expected_hosts:
+    raise ValueError("Expected the 42 ceiling receivers A05–G10")
+
+cycle_ok = position_ok & ap_ok.all(dim="hostname")
+cycle_ids = exp["cycle_id"].values[cycle_ok.values]
+full = exp.sel(cycle_id=cycle_ids)
+y_full = csi_stored.sel(cycle_id=cycle_ids).transpose("cycle_id", "hostname")
+rover_xyz_full = np.column_stack([
+    full["rover_x"].values,
+    full["rover_y"].values,
+    full["rover_z"].values,
+])
+print(f"Retained {len(cycle_ids)} of {int(ap_ok.any('hostname').sum())} populated RF cycles")
+```
+
+For the inspected EXP003 release, this retains cycles 1–527. The other two populated cycles, 528 and 529, each lack B09. Derive the selection from masks rather than these example numbers. Coordinate-only entries elsewhere on the shared cycle axis are also excluded.
+
+### Match antenna geometry by hostname
+
+Run the following from a notebook with the repository root on its Python import path. The existing helper reads channel 1 from the published geometry file. For reproducible analysis, retain a copy or identify the geometry revision as explained in [Assumptions and Limitations](../assumptions-and-limitations/#receiver-geometry-and-the-rf-phase-center).
+
+```python
+from processing.tutorials import csi_plot_utils as csi_utils
+
+antenna_positions = csi_utils.load_antenna_positions()
+
+
+def geometry_for_hosts(hostnames, positions):
+    names = [str(host).upper() for host in hostnames]
+    missing = [host for host in names if host not in positions]
+    if missing:
+        raise ValueError(f"Missing antenna geometry: {missing}")
+    xyz = np.asarray([positions[host] for host in names], dtype=float)
+    if xyz.shape != (len(names), 3) or not np.isfinite(xyz).all():
+        raise ValueError("Expected finite (number_of_hosts, 3) antenna coordinates")
+    return xyz
+
+
+ap_xyz_full = geometry_for_hosts(full["hostname"].values, antenna_positions)
+```
+
+Column `m` of `y_full` now corresponds to row `m` of `ap_xyz_full`. Do not independently sort or silently drop geometry rows.
+
+### A snapshot with an available AP subset
+
+An algorithm that supports a variable number of receivers can retain partial snapshots. Select the hostnames with valid CSI first, and use the identical selection for the observations and AP positions:
+
+```python
+cycle_id = 528
+if not bool(position_ok.sel(cycle_id=cycle_id).item()):
+    raise ValueError("Missing or invalid rover position")
+
+mask = ap_ok.sel(cycle_id=cycle_id)
+selected_hosts = exp["hostname"].values[mask.values]
+if len(selected_hosts) == 0:
+    raise ValueError("No valid RF measurements")
+
+y_subset = csi_stored.sel(cycle_id=cycle_id, hostname=selected_hosts).values
+ap_xyz_subset = geometry_for_hosts(selected_hosts, antenna_positions)
+snapshot = exp.sel(cycle_id=cycle_id)
+rover_xyz_subset = np.array([
+    snapshot["rover_x"].item(),
+    snapshot["rover_y"].item(),
+    snapshot["rover_z"].item(),
+])
+print("Excluded hosts:", exp["hostname"].values[~mask.values].tolist())
+```
+
+For EXP003/cycle 528, `y_subset` has shape `(41,)` and `ap_xyz_subset` has shape `(41, 3)`, with B09 excluded from both. The method still needs enough appropriately placed APs to solve its localization problem; presence alone does not establish geometric observability. Never fill missing CSI with zero to force a fixed-size vector.
+
+These examples preserve the stored CSI convention and logged rover coordinates. Apply any model-specific conjugation, RF phase-center correction, or quality threshold explicitly after validity filtering, following [Assumptions and Limitations](../assumptions-and-limitations/). Masks indicate availability, not signal quality; finite values alone do not establish usable phase or a good LoS fit.

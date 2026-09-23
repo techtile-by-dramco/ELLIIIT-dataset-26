@@ -25,7 +25,29 @@ For the reciprocity dataset path in this repository, the active RF aperture is t
 
 The repository stores one RF summary row per receiver host and per cycle. The processed dataset therefore represents one host per active ceiling tile, not a separate stored row for each physical RF connector.
 
-Visual references:
+## RF antenna position and phase-center approximation
+
+The rover-mounted RF transmit antenna is a TI.92.2113 with a length of 157 mm. The reported `rover_z` coordinate refers to the bottom of this antenna, rather than its phase center.
+
+For an ideal dipole, the phase center is at its geometric center. Using this approximation for the vertically mounted antenna places the phase center 157 mm / 2 = 78.5 mm above the reported position. For geometric RF localization, use:
+
+```python
+ue_x = rover_x
+ue_y = rover_y
+ue_z = rover_z + 0.0785  # coordinates in metres
+```
+
+This is an ideal-dipole approximation, not a measured phase-center calibration of the TI.92.2113. The stored rover coordinates do not include this correction. Apply it when constructing the RF antenna position, and retain the original coordinates as the logged ground truth. This RF-specific correction does not define the acoustic source position.
+
+## RF propagation conditions
+
+Based on previous measurements in Techtile, a strong line-of-sight (LoS) component is expected, with small contributions from multipath. A more thorough investigation of the propagation conditions in this dataset is still needed; the relative LoS and multipath strengths have not yet been quantified for this release.
+
+A LoS model is therefore a reasonable starting point for RF localization, but the measured CSI should not be treated as an exact noiseless, single-path channel.
+
+For phase conventions, amplitude units, receiver geometry, validity filtering, and evaluation limits, read [Assumptions and Limitations](../assumptions-and-limitations/).
+
+## Visual references
 
 <img
   src={publicUrl("images/photo1.jpg")}

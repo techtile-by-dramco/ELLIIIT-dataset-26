@@ -13,7 +13,10 @@ Primary entry points:
 
 - Published docs: <https://techtile-by-dramco.github.io/ELLIIIT-dataset-26/>
 - Local docs source: [`docs/`](docs/)
+- Before analysis: [Assumptions and Limitations](https://techtile-by-dramco.github.io/ELLIIIT-dataset-26/reference/assumptions-and-limitations/) ([source](docs/src/content/docs/reference/assumptions-and-limitations.mdx))
 - Runnable notebook tutorials: [`processing/tutorials/plot_csi_positions.ipynb`](processing/tutorials/plot_csi_positions.ipynb), [`processing/tutorials/tutorial_xarray_structure.ipynb`](processing/tutorials/tutorial_xarray_structure.ipynb), [`processing/tutorials/tutorial_acoustic_xarray_structure.ipynb`](processing/tutorials/tutorial_acoustic_xarray_structure.ipynb), [`processing/tutorials/tutorial_rover_positions.ipynb`](processing/tutorials/tutorial_rover_positions.ipynb), [`processing/tutorials/tutorial_csi_per_position.ipynb`](processing/tutorials/tutorial_csi_per_position.ipynb), [`processing/tutorials/tutorial_rf_acoustic_position.ipynb`](processing/tutorials/tutorial_rf_acoustic_position.ipynb), [`processing/tutorials/tutorial_csi_movies.ipynb`](processing/tutorials/tutorial_csi_movies.ipynb)
+
+For localization, filter availability masks and non-finite values, align receiver geometry by hostname, and account for the stored phase convention and approximate RF antenna phase-center offset. The assumptions guide explains these steps, the expected strong LoS with small multipath contributions, and the outstanding validation work.
 
 Example notebook-generated figure:
 
